@@ -6,5 +6,11 @@ A slide deck tool in a single HTML file. Write your deck as plain markdown,
 present it from the same page, export it as a self-contained static page.
 No build step, no dependencies.
 
+## Getting started
 
+- Check out from GitHub: `git clone git@github.com:torringstad/deckwright.git`
+- Live demo: https://www.pvv.ntnu.no/~torhr/deckwright/deckwright.html
+
+
+## Presentation document syntax
 
