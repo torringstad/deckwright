@@ -1,6 +1,8 @@
 # Deckwright
 
 ![deckwright_screenshot_small.png](deckwright_screenshot_small.png)
+![deckwright_presenter_small.png](deckwright_presenter_small.png)
+![deckwright_audience_small.png](deckwright_audience_small.png)
 
 A slide deck tool in a single HTML file. Write your deck as plain markdown,
 present it from the same page, export it as a self-contained static page.
@@ -11,6 +13,4 @@ No build step, no dependencies.
 - Check out from GitHub: `git clone git@github.com:torringstad/deckwright.git`
 - Live demo: https://www.pvv.ntnu.no/~torhr/deckwright/deckwright.html
 
-
-## Presentation document syntax
-
+The live demo will automatically open 
