@@ -1,0 +1,1647 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Deckwright</title>
+<style>
+  /* ===========================================================================
+     DECKWRIGHT — single-file, markdown-source workbench for decks.
+     No build, no deps, openable from disk.
+
+     A slide is FLOWING MARKDOWN, laid out by CSS + theme + a layout hint.
+     The whole deck is one markdown document in the left pane. The document
+     IS the file: import/export is just load/save text.
+
+     ONE render path: renderSlide() draws the preview, every thumbnail, the
+     presenter mirror, and the audience screen. One way to draw a slide.
+
+     Themes are plain CSS files. The default design lives in @layer deck-base;
+     the active theme is injected into @layer deck-theme and may recolor via
+     the --s-* tokens or restyle anything. Built-in and loaded themes share
+     the same format. See the THEMES section for the contract.
+
+     Dual-display presenting: popup = audience, postMessage sync, file://-safe,
+     Safari fullscreen triggered by the audience window's own gesture.
+     ======================================================================== */
+  :root{
+    --table:#1b2130; --panel:#232a3b; --rail:#161b27;
+    --line:#333b50; --line-soft:#2a3145;
+    --text:#e7eaf3; --muted:#868fa6; --faint:#5b6479;
+    --brass:#d2a24c; --brass-dim:#7a6233;
+    --sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    --mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, Consolas, monospace;
+  }
+  *{ box-sizing:border-box; }
+  html,body{ margin:0; height:100%; }
+  body{ background:var(--table); color:var(--text); font-family:var(--sans);
+        overflow:hidden; }
+  button{ font-family:var(--sans); cursor:pointer; }
+  .mono{ font-family:var(--mono); }
+  ::-webkit-scrollbar{ width:10px; height:10px; }
+  ::-webkit-scrollbar-thumb{ background:var(--line); border-radius:6px; }
+  :focus-visible{ outline:2px solid var(--brass); outline-offset:2px; }
+  @media (prefers-reduced-motion: reduce){ *{ transition:none !important; animation:none !important; } }
+
+  /* Slide transitions are driven by the Web Animations API — see makeTransitioner(). */
+
+  /* ---- editor chrome ---- */
+  #editor{ position:fixed; inset:0; display:flex; flex-direction:column; }
+  .topbar{ height:52px; flex:0 0 auto; background:var(--panel);
+    border-bottom:1px solid var(--line); display:flex; align-items:center;
+    padding:0 16px; gap:14px; }
+  .wordmark{ font-family:var(--mono); font-weight:700; letter-spacing:4px;
+    font-size:14px; }
+  .wordmark b{ color:var(--brass); font-weight:700; }
+  .deck-title{ font-size:13px; color:var(--muted); white-space:nowrap;
+    overflow:hidden; text-overflow:ellipsis; max-width:32vw; }
+  .spacer{ margin-left:auto; }
+  .btn{ font-size:13px; font-weight:500; color:var(--text); background:transparent;
+    border:1px solid var(--line); border-radius:7px; padding:7px 13px; white-space:nowrap; }
+  .btn:hover{ background:var(--line-soft); }
+  .btn.primary{ background:var(--brass); color:#1a1206; border-color:var(--brass); }
+  .btn.primary:hover{ filter:brightness(1.06); }
+  .body{ flex:1; display:flex; min-height:0; }
+
+  /* ---- right: the manuscript (markdown source) ---- */
+  .editpane{ flex:0 0 auto; width:clamp(340px, 30vw, 600px); display:flex;
+    flex-direction:column; background:var(--rail); border-left:1px solid var(--line); }
+  .editpane .head{ flex:0 0 auto; display:flex; align-items:center; gap:10px;
+    padding:9px 14px; border-bottom:1px solid var(--line-soft); }
+  .editpane .head .label{ font-family:var(--mono); font-size:11px; letter-spacing:2px;
+    color:var(--faint); }
+  .editpane .head .where{ margin-left:auto; font-family:var(--mono); font-size:11px;
+    color:var(--brass); letter-spacing:1px; }
+  .src{ flex:1; min-height:0; width:100%; resize:none; border:0; outline:0;
+    background:transparent; color:var(--text); font-family:var(--mono);
+    font-size:13.5px; line-height:1.65; padding:14px 16px 40px; tab-size:2;
+    white-space:pre; overflow:auto; transition:background .15s; }
+  .src::selection{ background:rgba(210,162,76,.28); }
+
+  /* ---- center: the bed ---- */
+  .main{ flex:1 1 0%; display:flex; flex-direction:column; min-width:0; }
+  .stagewrap{ flex:1; display:flex; align-items:center; justify-content:center;
+    padding:30px 36px; min-height:0; }
+  .frame{ position:relative; }
+  .frame .canvas{ position:relative; box-shadow:0 24px 60px rgba(0,0,0,.45);
+    border-radius:6px; overflow:hidden; border:1px solid var(--line); }
+  .tick{ position:absolute; width:14px; height:14px; pointer-events:none; }
+  .badge{ position:absolute; bottom:-24px; font-family:var(--mono); font-size:11px;
+    letter-spacing:1px; }
+  .badge.dim{ left:0; color:var(--faint); }
+  .badge.count{ right:0; color:var(--brass); }
+  .notes{ height:104px; flex:0 0 auto; background:var(--panel);
+    border-top:1px solid var(--line); padding:12px 18px; overflow-y:auto; }
+  .label{ font-family:var(--mono); font-size:11px; letter-spacing:2px;
+    color:var(--faint); margin-bottom:6px; }
+  .notes .text{ font-size:14px; line-height:1.55; color:var(--muted); white-space:pre-wrap; }
+
+  /* ---- pane dividers ---- */
+  .divider{ flex:0 0 6px; background:transparent; cursor:col-resize; position:relative;
+    z-index:10; display:flex; align-items:stretch; justify-content:center; }
+  .divider::after{ content:""; width:1px; background:var(--line); }
+  .divider:hover::after, .divider.dragging::after{ width:2px; background:var(--brass-dim); }
+  body.col-resizing, body.col-resizing *{ cursor:col-resize !important; user-select:none !important; }
+
+  .rail.collapsed, .editpane.collapsed{ flex:0 0 0px !important; width:0px !important;
+    min-width:0 !important; overflow:hidden !important; padding:0 !important;
+    border:0 !important; }
+  .divider.neighbor-collapsed::after{ background:var(--brass); width:3px; border-radius:2px; }
+  .divider.neighbor-collapsed:hover::after{ width:4px; background:var(--brass-dim); }
+
+  /* ---- left: thumbnail rail ---- */
+  .rail{ flex:0 0 auto; width:clamp(140px, 14vw, 220px); background:var(--rail);
+    border-right:1px solid var(--line); padding:10px; display:flex;
+    flex-direction:column; gap:6px; overflow-y:auto; }
+  .thumb{ display:flex; gap:10px; align-items:center; width:100%; padding:8px;
+    background:transparent; border:1px solid transparent; border-radius:8px;
+    text-align:left; }
+  .thumb:hover{ background:var(--line-soft); }
+  .thumb.active{ background:var(--panel); border-color:var(--brass-dim); }
+  .thumb .num{ font-family:var(--mono); font-size:11px; color:var(--faint); width:16px; }
+  .thumb.active .num{ color:var(--brass); }
+  .thumb .mini{ border-radius:4px; overflow:hidden; border:1px solid var(--line-soft);
+    flex-shrink:0; }
+  .err{ color:#e88; font-family:var(--mono); font-size:12px; padding:10px 14px;
+    border-top:1px solid var(--line-soft); white-space:pre-wrap; }
+  .err.warn{ color:var(--brass); }
+
+  /* ===========================================================================
+     SHARED SLIDE OUTPUT — every surface draws through this
+     Everything between the SLIDE-CSS markers is sliced verbatim into static
+     HTML exports — keep all rules a rendered slide needs inside them, and
+     nothing that references editor chrome.
+
+     CASCADE LAYERS — how theming works:
+       @layer deck-base   (this block)  the complete default design: geometry,
+                                        typography, spacing — colored through
+                                        the --s-* tokens, with defaults below.
+       @layer deck-theme  (injected)    the active theme's CSS, applied by
+                                        applyThemeCss() as a <style id=
+                                        "themeStyle">. Later layer, so a theme
+                                        overrides ANY rule here — recolor via
+                                        tokens, or restyle elements outright.
+     The only thing a theme may not break is the scaling geometry: those few
+     declarations are marked !important, which in an EARLIER layer wins.
+     ======================================================================== */
+  @layer deck-base, deck-theme;
+  /* SLIDE-CSS-BEGIN */
+  @layer deck-base{
+  .slide{ position:relative; overflow:hidden !important; background:var(--s-bg);
+    /* token defaults — themes normally re-declare these six on .slide */
+    --s-bg:#0b1020; --s-surface:#161d33; --s-text:#e8ecf6;
+    --s-muted:#9aa6c2; --s-accent:#6ea8fe; --s-line:#27314f; }
+  .stage{ position:absolute !important; top:0 !important; left:0 !important;
+    transform-origin:top left !important; }
+  /* Motion guard: slides rendered as small static previews (rail thumbnails,
+     presenter "next") carry .still — freeze any theme animation there. Same
+     !important-in-earlier-layer trick as the geometry guard above, so themes
+     can't (and needn't) opt out; live surfaces animate, previews don't. */
+  .slide.still, .slide.still *,
+  .slide.still::before, .slide.still::after,
+  .slide.still *::before, .slide.still *::after{
+    animation:none !important; transition:none !important; }
+  .md{ position:absolute; inset:0; padding:74px 86px; overflow:hidden;
+    display:flex; flex-direction:column; color:var(--s-text); }
+  .md.lay-center{ align-items:center; justify-content:center; text-align:center; }
+  .md.lay-cover{ justify-content:center; }
+  .md.lay-split{ padding:0; }
+
+  .cols{ display:grid; grid-template-columns:1fr 1fr; gap:64px; width:100%;
+    flex:1 1 auto; min-height:0; align-content:center; }
+  .col{ position:relative; padding:74px 56px; overflow:hidden; display:flex;
+    flex-direction:column; justify-content:flex-start; }
+  .col:first-child{ padding-left:86px; }
+  /* the row is content-sized now, so % max-height no longer binds images */
+  .col img{ max-height:560px; }
+  .col > :first-child{ margin-top:0; }
+  .col > :last-child{ margin-bottom:0; }
+  /* full-width bands above/below the columns in split layout */
+  .band{ flex:0 0 auto; overflow:hidden; padding:0 86px; }
+  .band-top{ padding-top:64px; }
+  .band-bottom{ padding-bottom:64px; }
+  .band > :first-child{ margin-top:0; }
+  .band > :last-child{ margin-bottom:0; }
+
+  .md > :first-child{ margin-top:0; }
+  .md > :last-child{ margin-bottom:0; }
+  .md h1,.md h2,.md h3,.md h4{ color:var(--s-text); line-height:1.08;
+    margin:0 0 .35em; font-weight:750; letter-spacing:-.5px; }
+  .md h1{ font-size:64px; } .md h2{ font-size:44px; } .md h3{ font-size:32px; }
+  .md h4{ font-size:26px; color:var(--s-muted); }
+  .md.lay-cover h1, .md.lay-center h1{ font-size:96px; letter-spacing:-2px; }
+  .md p{ font-size:30px; line-height:1.5; margin:0 0 .7em; color:var(--s-muted); }
+  .md.lay-cover p, .md.lay-center p{ font-size:34px; }
+  .md strong{ color:var(--s-text); font-weight:700; }
+  .md em{ font-style:italic; }
+  .md del{ opacity:.6; }
+  .md a{ color:var(--s-accent); text-decoration:none;
+    border-bottom:2px solid color-mix(in srgb, var(--s-accent) 45%, transparent); }
+  .md code{ font-family:var(--mono); font-size:.86em; background:var(--s-surface);
+    color:var(--s-text); padding:.08em .3em; border-radius:4px; }
+  .md pre{ background:var(--s-surface); border-radius:10px; padding:22px 26px;
+    overflow:auto; margin:0 0 .7em; }
+  .md pre code{ background:none; padding:0; font-size:24px; line-height:1.5;
+    color:var(--s-text); }
+  .md ul,.md ol{ font-size:30px; line-height:1.5; margin:0 0 .7em; padding-left:1.1em;
+    color:var(--s-muted); }
+  .md li{ margin:.22em 0; }
+  .md li::marker{ color:var(--s-accent); }
+  .md ul ul,.md ol ol{ margin:.1em 0; }
+  .md blockquote{ margin:0 0 .7em; padding:.1em 0 .1em 28px;
+    border-left:5px solid var(--s-accent); font-size:38px; line-height:1.3;
+    font-style:italic; color:var(--s-text); font-weight:600; }
+  .md hr{ border:0; height:2px; background:var(--s-line); margin:.6em 0; }
+  .md img{ max-width:100%; max-height:100%; border-radius:10px; display:block; }
+  .md .kicker{ font-family:var(--mono); font-size:18px; letter-spacing:3px;
+    text-transform:uppercase; color:var(--s-accent); font-weight:600; margin:0 0 18px; }
+
+  /* ---- image directive figures (<!-- image: file … -->) ----
+     .fig            wrapper; width:fit-content so alignment + captions track
+                     the picture. width=… sets an explicit width (.has-w).
+     .align-*        left / center (default) / right within the content flow
+     .fig-cover /
+     .fig-contain    absolutely fill the nearest frame — the whole slide, or
+                     the column when used inside split layout (.col is
+                     position:relative) — under the text via z-index:-1.
+     .fig-bleed      stays in flow but escapes the horizontal padding of its
+                     container (.md / .band / .col) via negative margins that
+                     mirror the container's own padding values.
+     .has-dim        darkens the picture (--fig-b = brightness) for overlays.
+     frame family    plain / shadow / border / circle (rounded is the default). */
+  .md .fig{ position:relative; margin:0 0 .7em; max-width:100%; width:fit-content; }
+  .md .fig.align-center{ margin-left:auto; margin-right:auto; }
+  .md .fig.align-right{ margin-left:auto; margin-right:0; }
+  .md .fig.has-w img{ width:100%; }
+  .md .fig.has-dim img{ filter:brightness(var(--fig-b,.65)); }
+  .md .fig.fig-plain img{ border-radius:0; }
+  .md .fig.fig-shadow img{ box-shadow:0 18px 44px rgba(0,0,0,.45); }
+  .md .fig.fig-border img{ border:3px solid var(--s-line); }
+  .md .fig.fig-circle img{ aspect-ratio:1/1; object-fit:cover; border-radius:50%; }
+  .md .fig figcaption{ font-size:20px; line-height:1.4; color:var(--s-muted);
+    margin-top:12px; text-align:center; }
+  .md .fig.fig-cover, .md .fig.fig-contain{ position:absolute; inset:0; margin:0;
+    width:auto; max-width:none; z-index:-1; }
+  .md .fig.fig-cover img, .md .fig.fig-contain img{ width:100%; height:100%;
+    max-width:none; max-height:none; border-radius:0; object-fit:cover; }
+  .md .fig.fig-contain img{ object-fit:contain; }
+  .md .fig.fig-cover figcaption, .md .fig.fig-contain figcaption{
+    position:absolute; left:0; right:0; bottom:24px; margin:0;
+    text-shadow:0 1px 6px rgba(0,0,0,.6); }
+  .md .fig.fig-bleed{ margin-left:-86px; margin-right:-86px;
+    width:auto; max-width:none; }
+  .md .fig.fig-bleed img{ width:100%; border-radius:0; }
+  .band .fig.fig-bleed{ margin-left:-86px; margin-right:-86px; }
+  .col .fig.fig-bleed{ margin-left:-56px; margin-right:-56px; }
+  .col:first-child .fig.fig-bleed{ margin-left:-86px; }
+  } /* end @layer deck-base */
+  /* SLIDE-CSS-END */
+
+  /* ---- presenter view (the laptop, while presenting) ---- */
+  #presenter{ position:fixed; inset:0; background:#0e1320; display:none;
+    flex-direction:column; }
+  #presenter.on{ display:flex; }
+  .p-top{ height:56px; flex:0 0 auto; display:flex; align-items:center; gap:18px;
+    padding:0 20px; border-bottom:1px solid var(--line); }
+  .p-timer{ font-family:var(--mono); font-size:22px; letter-spacing:1px; }
+  .p-status{ font-size:13px; color:var(--muted); }
+  .p-status b{ color:var(--brass); font-weight:600; }
+  .p-grid{ flex:1; display:flex; min-height:0; padding:20px; gap:20px; }
+  .p-current{ flex:1.6; display:flex; flex-direction:column; min-width:0;
+    align-items:center; justify-content:center; }
+  .p-side{ flex:1; display:flex; flex-direction:column; min-width:0; gap:16px; }
+  .p-next-label{ font-family:var(--mono); font-size:11px; letter-spacing:2px;
+    color:var(--faint); margin-bottom:8px; }
+  .p-next{ border:1px solid var(--line); border-radius:6px; overflow:hidden;
+    align-self:flex-start; }
+  .p-notes{ flex:1; background:#161c2c; border:1px solid var(--line);
+    border-radius:8px; padding:14px 16px; overflow-y:auto; }
+  .p-notes .text{ font-size:18px; line-height:1.6; color:#cfd6e6; white-space:pre-wrap; }
+  .p-bot{ height:64px; flex:0 0 auto; display:flex; align-items:center;
+    justify-content:center; gap:18px; border-top:1px solid var(--line); }
+  .p-nav{ width:42px; height:42px; border-radius:50%; border:1px solid var(--line);
+    background:transparent; color:var(--text); font-size:18px; }
+  .p-nav:hover{ background:var(--line-soft); }
+  .p-counter{ font-family:var(--mono); font-size:16px; letter-spacing:1px;
+    min-width:90px; text-align:center; }
+
+  /* ---- audience view (the popup / projector) ---- */
+  #audience{ position:fixed; inset:0; background:#000; display:none;
+    align-items:center; justify-content:center; }
+  #audience.on{ display:flex; }
+  .a-counter{ position:fixed; bottom:16px; right:20px; font-family:var(--mono);
+    font-size:13px; letter-spacing:1px; color:rgba(255,255,255,.55); }
+  .a-fs{ position:fixed; top:18px; right:18px; background:var(--brass); color:#1a1206;
+    border:none; border-radius:7px; padding:9px 14px; font-size:13px; font-weight:600; }
+  .a-wait{ color:rgba(255,255,255,.5); font-family:var(--mono); letter-spacing:1px;
+    font-size:13px; }
+  #aSlide{ position:relative; overflow:hidden; }
+</style>
+</head>
+<body>
+  <!-- EDITOR (main window) -->
+  <div id="editor">
+    <div class="topbar">
+      <span class="wordmark">DECK<b>WRIGHT</b></span>
+      <span class="deck-title" id="deckTitle"></span>
+      <span class="spacer"></span>
+      <button class="btn" id="newBtn">New</button>
+      <button class="btn" id="importBtn">Load</button>
+      <button class="btn" id="exportBtn">Save</button>
+      <button class="btn" id="exportAsBtn">Save as…</button>
+      <button class="btn" id="exportHtmlBtn" title="Static, script-free HTML of the rendered slides">Export HTML</button>
+      <button class="btn" id="themeBtn"></button>
+      <button class="btn" id="themeLoadBtn" title="Load a theme: a .css file with a /* @theme id &quot;Name&quot; */ header">Load theme…</button>
+      <button class="btn" id="notesBtn">Hide notes</button>
+      <button class="btn" id="audienceBtn">Show audience</button>
+      <button class="btn primary" id="viewBtn">▸ Presenter view</button>
+      <input type="file" id="importInput" accept=".md,.markdown,text/markdown" style="display:none" />
+      <input type="file" id="themeInput" accept=".css,text/css" style="display:none" />
+    </div>
+    <div class="body">
+      <nav class="rail" id="rail"></nav>
+      <div class="divider" id="dividerLeft"></div>
+      <main class="main">
+        <div class="stagewrap">
+          <div class="frame">
+            <div class="tick" style="top:-10px;left:-10px;border-top:1.5px solid var(--brass-dim);border-left:1.5px solid var(--brass-dim)"></div>
+            <div class="tick" style="top:-10px;right:-10px;border-top:1.5px solid var(--brass-dim);border-right:1.5px solid var(--brass-dim)"></div>
+            <div class="tick" style="bottom:-10px;left:-10px;border-bottom:1.5px solid var(--brass-dim);border-left:1.5px solid var(--brass-dim)"></div>
+            <div class="tick" style="bottom:-10px;right:-10px;border-bottom:1.5px solid var(--brass-dim);border-right:1.5px solid var(--brass-dim)"></div>
+            <div class="canvas" id="canvas"></div>
+            <div class="badge dim" id="badgeDim"></div>
+            <div class="badge count" id="badgeCount"></div>
+          </div>
+        </div>
+        <div class="notes" id="notesPanel">
+          <div class="label">SPEAKER NOTES</div>
+          <div class="text" id="notesText"></div>
+        </div>
+      </main>
+      <div class="divider" id="dividerRight"></div>
+      <section class="editpane">
+        <div class="head">
+          <span class="label">MANUSCRIPT</span>
+          <span class="where" id="caretWhere"></span>
+        </div>
+        <textarea class="src" id="src" spellcheck="false"
+          autocomplete="off" autocapitalize="off"></textarea>
+        <div class="err" id="errBox" style="display:none"></div>
+      </section>
+    </div>
+  </div>
+
+  <!-- PRESENTER VIEW (main window, while presenting) -->
+  <div id="presenter">
+    <div class="p-top">
+      <span class="wordmark">DECK<b>WRIGHT</b></span>
+      <span class="p-timer" id="pTimer">00:00</span>
+      <span class="p-status" id="pStatus"></span>
+      <span class="spacer"></span>
+      <button class="btn" id="audienceBtn2">Show audience</button>
+      <button class="btn primary" id="viewBtn2">◂ Edit view</button>
+    </div>
+    <div class="p-grid">
+      <div class="p-current"><div id="pCurrent"></div></div>
+      <div class="p-side">
+        <div>
+          <div class="p-next-label">NEXT</div>
+          <div class="p-next" id="pNext"></div>
+        </div>
+        <div class="p-notes"><div class="text" id="pNotes"></div></div>
+      </div>
+    </div>
+    <div class="p-bot">
+      <button class="p-nav" id="pPrev">‹</button>
+      <span class="p-counter" id="pCounter"></span>
+      <button class="p-nav" id="pNext2">›</button>
+    </div>
+  </div>
+
+  <!-- AUDIENCE VIEW (popup / projector) -->
+  <div id="audience">
+    <div id="aSlide"><span class="a-wait">Waiting for presenter…</span></div>
+    <button class="a-fs" id="aFsBtn">Go fullscreen</button>
+    <div class="a-counter" id="aCounter"></div>
+  </div>
+
+<script>
+/* =============================================================================
+ * MODEL — reference canvas + themes
+ * ===========================================================================*/
+const REF_W = 1280, REF_H = 720;
+
+/* -----------------------------------------------------------------------------
+ * THEMES — a theme is a plain CSS file.
+ *
+ * Format: ordinary CSS whose first comment reads:   @theme <id> "<Name>"
+ * The full CSS platform is available: @font-face, @import, gradients,
+ * ::before/::after chrome, color-mix(), anything the browser ships.
+ *
+ * The contract (the DOM every rendered slide guarantees):
+ *   .slide                the slide box (put backgrounds & the --s-* tokens here)
+ *     .stage              the scaled 1280×720 logical canvas (geometry — hands off)
+ *       .md               the content root; carries .lay-default|-cover|-center|-split
+ *         .band-top/.band-bottom, .cols > .col     (split layout skeleton)
+ *         h1..h4 p ul ol li blockquote pre code a img strong em del hr
+ *         .kicker         an eyebrow-label helper class
+ *   Tokens: --s-bg --s-surface --s-text --s-muted --s-accent --s-line
+ *   Animation: themes may use @keyframes/transitions freely. Slides rendered
+ *   as small static previews (rail thumbnails, presenter "next") additionally
+ *   carry .still, where the base layer force-freezes all animation — themes
+ *   need no special handling, and cannot override the freeze.
+ *   A minimal theme just re-declares the six tokens on .slide; a maximal one
+ *   may restyle any element — theme CSS is injected into @layer deck-theme,
+ *   which outranks the built-in design in @layer deck-base.
+ * ---------------------------------------------------------------------------*/
+const MIDNIGHT_CSS = `/* @theme midnight "Midnight" */
+.slide{
+  --s-bg:#0b1020; --s-surface:#161d33; --s-text:#e8ecf6;
+  --s-muted:#9aa6c2; --s-accent:#6ea8fe; --s-line:#27314f;
+}`;
+
+const PAPER_CSS = `/* @theme paper "Paper" */
+.slide{
+  --s-bg:#f6f4ee; --s-surface:#ece8df; --s-text:#1d2330;
+  --s-muted:#5b6577; --s-accent:#c0612f; --s-line:#d8d2c6;
+}`;
+
+const THEMES = {};   // id -> { id, name, css }
+
+function registerTheme(cssText){
+  const m = String(cssText).match(/\/\*\s*@theme\s+([\w-]+)\s+"([^"]+)"/);
+  if(!m) throw new Error('Theme CSS needs a header comment: /* @theme <id> "<Name>" */');
+  const t = { id:m[1], name:m[2], css:String(cssText) };
+  THEMES[t.id] = t;
+  return t;
+}
+registerTheme(MIDNIGHT_CSS);
+registerTheme(PAPER_CSS);
+
+/** @import is only valid before any style rule, so it can't live inside the
+ *  @layer wrapper — split a theme into hoisted imports and the layered body. */
+function splitThemeImports(css){
+  const imports=[];
+  // Match real @import syntax only (url(...) or a quoted string — the mere
+  // word "@import" in a comment won't match), and consume quoted strings
+  // whole: Google Fonts URLs legitimately contain semicolons inside quotes.
+  const IMPORT_RE = /@import\s+(?:url\(\s*(?:"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|[^)]*)\s*\)|"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*')[^;]*;/g;
+  const body=String(css).replace(IMPORT_RE, m=>{ imports.push(m); return ""; });
+  return { imports: imports.join("\n"), body };
+}
+
+/** Install theme CSS into a document (idempotent; one <style> per document). */
+function applyThemeCss(doc, css){
+  let el = doc.getElementById("themeStyle");
+  if(!el){ el = doc.createElement("style"); el.id = "themeStyle"; doc.head.appendChild(el); }
+  const t = splitThemeImports(css);
+  el.textContent = t.imports + "\n@layer deck-theme{\n" + t.body + "\n}";
+}
+
+const figureSrc = (() => {
+  const bars=[38,64,52,88,71].map((h,i)=>
+    `<rect x="${40+i*90}" y="${260-h*2}" width="56" height="${h*2}" rx="6" fill="#6ea8fe" opacity="${0.5+i*0.1}"/>`).join("");
+  const svg=`<svg xmlns="http://www.w3.org/2000/svg" width="520" height="300" viewBox="0 0 520 300"><rect width="520" height="300" fill="#0e1530"/><line x1="40" y1="260" x2="500" y2="260" stroke="#2a3a66" stroke-width="2"/>${bars}</svg>`;
+  return "data:image/svg+xml,"+encodeURIComponent(svg);
+})();
+
+/** Shown when an image fails to load — same vein as figureSrc, but carrying
+ *  the missing path so the author can see what to fix (even on thumbnails). */
+function placeholderSrc(name){
+  const label = String(name).slice(-44).replace(/[<>&"]/g,"");
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="520" height="300" viewBox="0 0 520 300">`
+    + `<rect width="520" height="300" fill="#0e1530"/>`
+    + `<rect x="14" y="14" width="492" height="272" rx="10" fill="none" stroke="#2a3a66" stroke-width="2" stroke-dasharray="8 8"/>`
+    + `<text x="260" y="138" text-anchor="middle" fill="#5b7bd6" font-family="monospace" font-size="20">image not found</text>`
+    + `<text x="260" y="174" text-anchor="middle" fill="#9aa6c2" font-family="monospace" font-size="15">${label}</text>`
+    + `</svg>`;
+  // encodeURIComponent leaves ' alone; it must not break the onerror attribute
+  return "data:image/svg+xml,"+encodeURIComponent(svg).replace(/'/g,"%27");
+}
+
+/* =============================================================================
+ * BLOCK DIRECTIVES — positional <!-- name: value --> lines, rendered IN PLACE
+ * by the markdown engine. Same surface syntax as the slide directives above
+ * renderSlide's world (layout, bg, …), but a different class: slide directives
+ * are metadata and may sit anywhere in a slide's source; block directives are
+ * content, and WHERE they stand is where they render. parseSlide() leaves
+ * them in the body untouched; mdToHtml() owns them.
+ *
+ *   <!-- image: <file|url> [options] -->
+ *     width=480 | width=60%      explicit width (logical px / % of content)
+ *     left | center | right      alignment in the flow (default center)
+ *     cover | contain            fill the slide — or the column, in split
+ *                                layout — behind the text; object-fit as named
+ *     dim=0..1                   darken the picture (for text overlays)
+ *     bleed                      edge-to-edge horizontally, staying in flow
+ *     rounded|plain|shadow|border|circle   frame family (rounded is default)
+ *     caption="…"                figcaption below (inline markdown allowed)
+ *     alt="…"                    explicit alt text (falls back to caption,
+ *                                then to the file name)
+ *   Quotes make spaces possible in the file name and option values.
+ * ===========================================================================*/
+const DIRECTIVE_LINE_RE = /^\s*<!--\s*([A-Za-z][\w-]*)\s*:\s*(.*?)\s*-->\s*$/;
+const IMG_FLAGS = new Set(["left","center","right","cover","contain","bleed",
+  "rounded","plain","shadow","border","circle"]);
+const IMG_KEYS = new Set(["width","dim","caption","alt"]);
+
+/** '"my chart.png" width=60% right caption="Q3, by region"' -> option model.
+ *  Never throws: bad options become warnings and the defaults carry on. */
+function parseImageOptions(value){
+  const toks = String(value).match(/(?:[\w-]+=)?"[^"]*"|\S+/g) || [];
+  const unq = t => t.replace(/^"|"$/g,"");
+  const o = { src:"", flags:new Set(), width:null, dim:null, caption:null,
+              alt:null, warnings:[] };
+  toks.forEach((t,ix)=>{
+    if(ix===0){ o.src = unq(t); return; }
+    const eq = t.indexOf("=");
+    if(eq > 0){
+      const k = t.slice(0,eq).toLowerCase(), v = unq(t.slice(eq+1));
+      if(!IMG_KEYS.has(k)){ o.warnings.push(`unknown image option "${k}"`); return; }
+      if(k === "width"){
+        if(/^\d+(\.\d+)?%?$/.test(v)) o.width = v.endsWith("%") ? v : v+"px";
+        else o.warnings.push(`bad image width "${v}" (use e.g. 480 or 60%)`);
+      } else if(k === "dim"){
+        const d = parseFloat(v);
+        if(isFinite(d) && d >= 0 && d <= 1) o.dim = d;
+        else o.warnings.push(`bad image dim "${v}" (use 0..1)`);
+      } else o[k] = v;
+    } else {
+      const f = t.toLowerCase();
+      if(IMG_FLAGS.has(f)) o.flags.add(f);
+      else o.warnings.push(`unknown image option "${t}"`);
+    }
+  });
+  if(!o.src) o.warnings.push("image directive without a file");
+  return o;
+}
+
+/** value -> <figure> HTML string. Pure string-out like the rest of the
+ *  markdown engine, so every surface (and the static export) gets it free. */
+function renderImage(value){
+  const o = parseImageOptions(value);
+  if(!o.src) return "";
+  const full = o.flags.has("cover") || o.flags.has("contain");
+  const cls = ["fig"], style = [];
+  if(full) cls.push(o.flags.has("contain") ? "fig-contain" : "fig-cover");
+  else if(o.flags.has("bleed")) cls.push("fig-bleed");
+  if(o.flags.has("circle")) cls.push("fig-circle");
+  if(o.flags.has("plain"))  cls.push("fig-plain");
+  if(o.flags.has("shadow")) cls.push("fig-shadow");
+  if(o.flags.has("border")) cls.push("fig-border");
+  const inFlow = !full && !o.flags.has("bleed");
+  if(inFlow){
+    cls.push("align-" + (o.flags.has("left") ? "left"
+                       : o.flags.has("right") ? "right" : "center"));
+    let width = o.width;
+    if(o.flags.has("circle") && !width) width = "320px"; // a circle needs a size
+    if(width){ cls.push("has-w"); style.push("width:"+width); }
+  }
+  if(o.dim != null){
+    cls.push("has-dim");
+    style.push("--fig-b:" + Math.round((1-o.dim)*100)/100);
+  }
+  const alt = o.alt ?? o.caption ?? o.src.split("/").pop();
+  const cap = o.caption ? `<figcaption>${mdInline(o.caption)}</figcaption>` : "";
+  return `<figure class="${cls.join(" ")}"`
+    + (style.length ? ` style="${escAttr(style.join(";"))}"` : "") + ">"
+    + `<img src="${escAttr(o.src)}" alt="${escAttr(alt)}" decoding="async"`
+    + ` onerror="this.onerror=null;this.src='${placeholderSrc(o.src)}'">`
+    + cap + `</figure>`;
+}
+
+const BLOCK_DIRECTIVES = { image: renderImage };
+
+/* =============================================================================
+ * MARKDOWN ENGINE — compact, dependency-free, returns an HTML string.
+ * Block: headings, fenced code, blockquote, lists (1 level nest), hr, images,
+ * block directives (see BLOCK_DIRECTIVES above), paragraphs.
+ * Inline: code, images, links, bold, italic, strike, breaks.
+ * A lone directive-shaped comment line whose name is unknown is dropped here
+ * (parseSlide already pushed a warning for it); \<!-- renders as literal text.
+ * ===========================================================================*/
+const escHtml = s => s.replace(/[&<>]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;"}[c]));
+const escAttr = s => escHtml(s).replace(/"/g,"&quot;");
+
+function mdInline(src){
+  const codes=[];
+  // protect inline code first so its contents are never re-parsed
+  let s = src.replace(/`([^`]+)`/g, (_,c)=>{ codes.push(c); return "\u0000"+(codes.length-1)+"\u0000"; });
+  s = s.replace(/\\(<!--)/g, "$1"); // \<!-- shows as a literal comment
+  s = escHtml(s);
+  s = s.replace(/!\[([^\]]*)\]\(([^)\s]+)\)/g, (_,alt,u)=>`<img src="${escAttr(u)}" alt="${escAttr(alt)}">`);
+  s = s.replace(/\[([^\]]+)\]\(([^)\s]+)\)/g, (_,t,u)=>`<a href="${escAttr(u)}">${t}</a>`);
+  s = s.replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
+  s = s.replace(/(^|[^\*])\*([^*\s][^*]*?)\*/g, "$1<em>$2</em>");
+  s = s.replace(/(^|[^A-Za-z0-9_])_([^_\s][^_]*?)_/g, "$1<em>$2</em>");
+  s = s.replace(/~~([^~]+)~~/g, "<del>$1</del>");
+  s = s.replace(/  $/g, "<br>");
+  s = s.replace(/\u0000(\d+)\u0000/g, (_,i)=>`<code>${escHtml(codes[+i])}</code>`);
+  return s;
+}
+
+function mdToHtml(md){
+  const lines = String(md).replace(/\r\n/g,"\n").split("\n");
+  let out="", i=0;
+  const isBlank = l => /^\s*$/.test(l);
+
+  while(i < lines.length){
+    let line = lines[i];
+    if(isBlank(line)){ i++; continue; }
+
+    // fenced code
+    let f = line.match(/^\s*```(.*)$/);
+    if(f){
+      const buf=[]; i++;
+      while(i<lines.length && !/^\s*```\s*$/.test(lines[i])){ buf.push(lines[i]); i++; }
+      i++; // closing fence
+      out += `<pre><code>${escHtml(buf.join("\n").replace(/\\(<!--)/g,"$1"))}</code></pre>`;
+      continue;
+    }
+    // horizontal rule (in-slide): *** or ___  (--- is reserved for slide breaks)
+    if(/^\s*(\*\*\*+|___+)\s*$/.test(line)){ out += "<hr>"; i++; continue; }
+    // heading
+    let h = line.match(/^\s*(#{1,6})\s+(.*?)\s*#*\s*$/);
+    if(h){ const n=h[1].length; out += `<h${n}>${mdInline(h[2])}</h${n}>`; i++; continue; }
+    // blockquote (consecutive > lines)
+    if(/^\s*>/.test(line)){
+      const buf=[];
+      while(i<lines.length && /^\s*>/.test(lines[i])){ buf.push(lines[i].replace(/^\s*>\s?/,"")); i++; }
+      out += `<blockquote>${mdInline(buf.join(" ")).replace(/\s*<br>\s*/g," ")}</blockquote>`;
+      continue;
+    }
+    // lists (ordered or unordered, one level of nesting via indent)
+    if(/^\s*([-*+]|\d+\.)\s+/.test(line)){
+      const ordered = /^\s*\d+\.\s+/.test(line);
+      const r = renderList(lines, i, ordered ? "ol" : "ul");
+      out += r.html; i = r.next;
+      continue;
+    }
+    // standalone image line -> figure block
+    let im = line.match(/^\s*!\[([^\]]*)\]\(([^)\s]+)\)\s*$/);
+    if(im){ out += `<p><img src="${escAttr(im[2])}" alt="${escAttr(im[1])}"></p>`; i++; continue; }
+    // block directive line -> rendered in place; unknown names drop out here
+    // (parseSlide warned about them already). Escaped \<!-- doesn't match.
+    let bd = line.match(DIRECTIVE_LINE_RE);
+    if(bd){
+      const r = BLOCK_DIRECTIVES[bd[1].toLowerCase()];
+      out += r ? r(bd[2]) : "";
+      i++; continue;
+    }
+
+    // paragraph (gather until blank or a block starter)
+    const buf=[];
+    while(i<lines.length && !isBlank(lines[i])
+          && !/^\s*(#{1,6})\s+/.test(lines[i])
+          && !/^\s*```/.test(lines[i])
+          && !/^\s*>/.test(lines[i])
+          && !/^\s*([-*+]|\d+\.)\s+/.test(lines[i])
+          && !/^\s*(\*\*\*+|___+)\s*$/.test(lines[i])
+          && !DIRECTIVE_LINE_RE.test(lines[i])){
+      buf.push(lines[i]); i++;
+    }
+    out += `<p>${mdInline(buf.join("\n"))}</p>`;
+  }
+  return out;
+}
+
+// list renderer with nesting (>=2 extra leading spaces => nested list)
+function renderList(lines, start, tag){
+  const itemRe = /^(\s*)([-*+]|\d+\.)\s+(.*)$/;
+  const first = lines[start].match(itemRe);
+  const base = first ? first[1].length : 0;
+  let i = start, html = `<${tag}>`, hasItem = false;
+  while(i < lines.length){
+    const m = lines[i].match(itemRe);
+    if(!m) break;
+    const indent = m[1].length, text = m[3];
+    if(indent < base) break;                       // belongs to a shallower list
+    if(indent >= base + 2){                         // deeper -> nest under previous item
+      const subTag = /\d+\./.test(m[2]) ? "ol" : "ul";
+      const sub = renderList(lines, i, subTag);
+      if(hasItem){ html = html.replace(/<\/li>$/, sub.html + "</li>"); }
+      else { html += `<li>${sub.html}</li>`; hasItem = true; }
+      i = sub.next;
+      continue;
+    }
+    html += `<li>${mdInline(text)}</li>`; hasItem = true; i++;
+  }
+  html += `</${tag}>`;
+  return { html, next:i };
+}
+
+/* =============================================================================
+ * DECK PARSER — the whole document -> { meta, slides } with source ranges.
+ * Front matter: a --- ... --- block at the very top.
+ * Slides: separated by a line that is exactly --- (3+ dashes).
+ * Directives are HTML comments <!-- name: value --> and come in two classes
+ * with one shared syntax, routed by name:
+ * SLIDE directives — metadata; position-free, stripped from the body here:
+ *   <!-- layout: center|cover|split|default -->
+ *   <!-- bg: #001220 | url(...) -->
+ *   <!-- transition: fade|slideleft|slideright|slideup|slidedown|none -->
+ *   <!-- zoom: 0.9 -->   (slide box stays the same; content is typeset at 90%,
+ *                          so <1 buys extra room inside, >1 makes things larger)
+ *   <!-- notes: ... -->   (may span lines until -->)
+ * BLOCK directives — content; left in the body, rendered in place by the
+ * markdown engine (see BLOCK_DIRECTIVES for the vocabulary and options):
+ *   <!-- image: photo.jpg width=60% right shadow caption="…" -->
+ * Unknown directive names are dropped from output and reported as warnings
+ * (deck.warnings, shown in the editor's message box). Escape with \<!-- to
+ * show a directive-shaped comment literally.
+ * In split layout, "==" on its own line divides sections. Two parts give
+ * left == right columns; three give a full-width top band then left == right;
+ * four give top == left == right == bottom (top/bottom are full-width bands).
+ * Lead with "==" to skip the top band (empty sections collapse).
+ * ===========================================================================*/
+const DEFAULT_META = { title:"Untitled deck", theme:"midnight", aspect:"16:9" };
+
+function parseDeck(source){
+  source = String(source).replace(/\r\n/g,"\n");
+  const lines = source.split("\n");
+  const meta = { ...DEFAULT_META };
+  let bodyStart = 0;
+
+  // front matter
+  if(lines[0] !== undefined && lines[0].trim() === "---"){
+    let j = 1;
+    while(j < lines.length && lines[j].trim() !== "---"){
+      const m = lines[j].match(/^([\w]+)\s*:\s*(.*)$/);
+      if(m){
+        const k = m[1].toLowerCase(), v = m[2].replace(/^["']|["']$/g,"").trim();
+        if(k === "title" || k === "deck") meta.title = v;
+        else if(k === "theme") meta.theme = v;
+        else if(k === "aspect") meta.aspect = v;
+      }
+      j++;
+    }
+    bodyStart = (j < lines.length) ? j + 1 : j;
+  }
+  if(!THEMES[meta.theme]) meta.theme = "midnight";
+
+  // offset where the body begins in the original source
+  let offset = lines.slice(0, bodyStart).join("\n").length + (bodyStart > 0 ? 1 : 0);
+  const bodyLines = lines.slice(bodyStart);
+
+  // split into slide chunks on a bare ---
+  const chunks = [];
+  let cur = { text:"", start: offset };
+  let run = offset;
+  bodyLines.forEach((ln, idx) => {
+    const isSep = /^\s*---\s*$/.test(ln);
+    if(isSep){
+      cur.end = run;
+      chunks.push(cur);
+      run += ln.length + 1;
+      cur = { text:"", start: run };
+    } else {
+      cur.text += (cur.text ? "\n" : "") + ln;
+      run += ln.length + (idx < bodyLines.length - 1 ? 1 : 0);
+    }
+  });
+  cur.end = source.length;
+  chunks.push(cur);
+
+  const slides = chunks
+    .map(c => ({ ...parseSlide(c.text), start:c.start, end:c.end }))
+    .filter(s => s.body.trim() !== "" || s.layout !== "default" || s.bg || s.notes);
+
+  if(slides.length === 0){
+    slides.push({ body:"", layout:"default", bg:null, transition:"none",
+      notes:"", zoom:1, warnings:[], start: offset, end: source.length });
+  }
+  // aggregate warnings AFTER filtering, so slide numbers match the rail
+  const warnings = [];
+  slides.forEach((s,i)=>
+    (s.warnings||[]).forEach(w=> warnings.push(`slide ${i+1}: ${w}`)));
+  return { meta, slides, warnings };
+}
+
+function parseSlide(text){
+  let layout = "default", bg = null, transition = "none", notes = "", zoom = 1;
+  // pull multi-line notes first (not preceded by backslash)
+  text = text.replace(/(?<!\\)<!--\s*notes:\s*([\s\S]*?)-->/i, (_,n)=>{ notes = n.trim(); return ""; });
+  // single-line directives (not preceded by backslash)
+  text = text.replace(/(?<!\\)<!--\s*(layout|bg|transition|class|zoom)\s*:\s*([^>]*?)-->/gi, (_,k,v)=>{
+    k = k.toLowerCase(); v = v.trim();
+    if(k === "layout" || k === "class") layout = v.split(/\s+/)[0] || "default";
+    else if(k === "bg") bg = v;
+    else if(k === "transition") transition = v;
+    else if(k === "zoom"){ const z = parseFloat(v); if(isFinite(z) && z > 0) zoom = z; }
+    return "";
+  });
+  // strip unrecognised HTML comment directives (@… and slide…) silently
+  text = text.replace(/(?<!\\)<!--\s*@[\s\S]*?-->/g, "")
+             .replace(/(?<!\\)<!--\s*slide[\s\S]*?-->/gi, "");
+  // strip trailing {x=.. y=..} geometry attrs (ignored layout hints)
+  text = text.replace(/[ \t]*\{[^}\n]*\}[ \t]*$/gm, "");
+
+  // Classify what's left. Block directives stay in the body — the markdown
+  // engine renders them where they stand. Anything else that looks like a
+  // lone directive line is a typo or an unknown name: warn here, and let the
+  // engine drop it. The walk is fence-aware, so code samples may show
+  // directives without triggering warnings. (\<!-- escapes don't match the
+  // directive shape and flow through to render as literal text.)
+  const warnings = [];
+  let inFence = false;
+  for(const ln of text.split("\n")){
+    if(inFence){ if(/^\s*```\s*$/.test(ln)) inFence = false; continue; }
+    if(/^\s*```/.test(ln)){ inFence = true; continue; }
+    const d = ln.match(DIRECTIVE_LINE_RE);
+    if(!d) continue;
+    const name = d[1].toLowerCase();
+    if(BLOCK_DIRECTIVES[name]){
+      if(name === "image") warnings.push(...parseImageOptions(d[2]).warnings);
+    } else warnings.push(`unknown directive "${d[1]}"`);
+  }
+
+  return { body: text.replace(/^\n+|\n+$/g,""), layout, bg, transition, notes,
+           zoom, warnings };
+}
+
+/* =============================================================================
+ * RENDER — the single shared path.  Markdown -> themed, laid-out, scaled stage.
+ * ===========================================================================*/
+function buildContent(slide){
+  const node = document.createElement("div");
+  node.className = "md lay-" + (slide.layout || "default");
+  if(slide.layout === "split"){
+    // "==" on its own line divides the slide into sections:
+    //   2 parts -> left == right
+    //   3 parts -> top == left == right
+    //   4 parts -> top == left == right == bottom
+    // A leading "==" yields an empty top, so "== left == right == bottom"
+    // gives left/right columns with only a bottom band. Empty bands collapse.
+    const parts = slide.body.split(/^\s*==\s*$/m).slice(0,4);
+    let top = "", left = "", right = "", bottom = "";
+    if(parts.length <= 1)      [left]                    = [slide.body];
+    else if(parts.length === 2)[left, right]             = parts;
+    else if(parts.length === 3)[top, left, right]        = parts;
+    else                       [top, left, right, bottom]= parts;
+    const addBand = (src, where)=>{
+      if(!src || !src.trim()) return;
+      const band = document.createElement("div");
+      band.className = "band band-" + where;
+      band.innerHTML = mdToHtml(src);
+      node.appendChild(band);
+    };
+    addBand(top, "top");
+    const grid = document.createElement("div"); grid.className = "cols";
+    [left, right].forEach(p=>{
+      const col = document.createElement("div"); col.className = "col";
+      col.innerHTML = mdToHtml(p || "");
+      grid.appendChild(col);
+    });
+    node.appendChild(grid);
+    addBand(bottom, "bottom");
+  } else {
+    node.innerHTML = mdToHtml(slide.body);
+  }
+  return node;
+}
+
+/** The one and only way a slide is drawn. Theme-blind: the active theme is a
+ *  stylesheet in the document (applyThemeCss), and .slide picks up var(--s-bg)
+ *  from CSS — only a per-slide bg override is set inline here. */
+function renderSlide(slide, width, opts){
+  const scale = width / REF_W, height = width * REF_H / REF_W;
+  const wrap = document.createElement("div");
+  wrap.className = "slide" + (opts && opts.still ? " still" : "");
+  wrap.style.width = width + "px"; wrap.style.height = height + "px";
+  if(slide.bg){
+    if(/^url\(/i.test(slide.bg)){
+      wrap.style.backgroundImage = slide.bg;
+      wrap.style.backgroundSize = "cover"; wrap.style.backgroundPosition = "center";
+    } else {
+      wrap.style.background = slide.bg;
+    }
+  }
+  const stage = document.createElement("div");
+  stage.className = "stage";
+  // Per-slide zoom changes the size of the LOGICAL canvas, not the slide box.
+  // The stage is laid out at (REF/z) logical pixels and scaled by (fit * z),
+  // so it always fills the wrap exactly: the exterior is constant, but e.g.
+  // zoom:0.9 typesets everything 10% smaller and buys ~11% more room inside.
+  // One render path means this holds on every surface, thumbnails included.
+  const z = slide.zoom > 0 ? slide.zoom : 1;
+  stage.style.width = (REF_W / z) + "px"; stage.style.height = (REF_H / z) + "px";
+  stage.style.transform = "scale(" + (scale * z) + ")";
+  stage.appendChild(buildContent(slide));
+  wrap.appendChild(stage);
+  return wrap;
+}
+const pad2 = n => String(n).padStart(2,"0");
+
+/* =============================================================================
+ * SLIDE TRANSITIONS
+ * One controller per container (canvas, aSlide). The controller owns all
+ * transition state — the in-flight animations and their cleanup — so an
+ * interrupted swap is settled instantly and completely before the next one
+ * starts, and nothing can reach back into a later transition's nodes.
+ * The containers carry position:relative + overflow:hidden in CSS.
+ * ===========================================================================*/
+const TR_DURATION = 400; // ms
+const prefersReducedMotion = () =>
+  window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+
+/**
+ * @param {HTMLElement} container
+ * @returns {(newNode:HTMLElement, transition:string, dir:number, animate:boolean)=>void}
+ *   Swap in a freshly rendered .slide. `animate` is true only for real
+ *   navigation; refreshes (resize, edits, theme, pane drags) pass false.
+ */
+function makeTransitioner(container){
+  let settle = null; // finishes the in-flight swap instantly, or null
+
+  return function show(newNode, transition, dir, animate){
+    if(settle) settle(); // interrupt: land the previous swap before starting
+
+    const oldNode = container.querySelector(".slide"); // sole child after settle
+    if(!oldNode) container.replaceChildren(); // clear placeholder content
+    container.appendChild(newNode);
+    // Explicit size so the container holds shape while children are absolute.
+    container.style.width = newNode.style.width;
+    container.style.height = newNode.style.height;
+
+    transition = String(transition || "none").toLowerCase();
+    const animatable = transition === "fade" || transition === "slideleft"
+      || transition === "slideright" || transition === "slideup" || transition === "slidedown";
+    if(!oldNode || !animate || !animatable || prefersReducedMotion()){
+      if(oldNode) oldNode.remove();
+      return;
+    }
+
+    // Stack the two slides while they animate; overflow:hidden clips them.
+    for(const n of [oldNode, newNode]){
+      n.style.position = "absolute"; n.style.top = "0"; n.style.left = "0";
+    }
+
+    const opts = { duration: TR_DURATION, easing: "ease", fill: "both" };
+    const anims = [];
+    if(transition === "fade"){
+      // Fade only the incoming slide (it stacks on top). Fading both lets the
+      // backdrop bleed through at the midpoint — a visible dip to black.
+      anims.push(newNode.animate([{opacity:0},{opacity:1}], opts));
+    } else { // slideleft / slideright / slideup / slidedown
+      const vertical = transition === "slideup" || transition === "slidedown";
+      const axis = vertical ? "Y" : "X";
+      // "natural" direction: slideleft/slideup move content toward negative,
+      // slideright/slidedown toward positive. `dir` flips for back-navigation.
+      const natural = (transition === "slideright" || transition === "slidedown") ? -1 : 1;
+      const sign = dir >= 0 ? natural : -natural;
+      const from = `translate${axis}(${sign > 0 ? "" : "-"}100%)`;
+      const to   = `translate${axis}(${sign > 0 ? "-" : ""}100%)`;
+      anims.push(newNode.animate(
+        [{transform:from},{transform:`translate${axis}(0)`}], opts));
+      anims.push(oldNode.animate(
+        [{transform:`translate${axis}(0)`},{transform:to}], opts));
+    }
+
+    let done = false;
+    const finish = () => {
+      if(done) return;
+      done = true;
+      if(settle === finish) settle = null;
+      anims.forEach(a => { try{ a.cancel(); }catch(e){} });
+      oldNode.remove();
+      newNode.style.position = ""; newNode.style.top = ""; newNode.style.left = "";
+    };
+    settle = finish;
+    // finished rejects on cancel; allSettled makes this a plain "when over".
+    Promise.allSettled(anims.map(a => a.finished)).then(finish);
+  };
+}
+
+/* =============================================================================
+ * NEW DECK TEMPLATE — a minimal blank project ready to fill in.
+ * ===========================================================================*/
+const NEW_DECK = `---
+title: New deck
+theme: midnight
+aspect: "16:9"
+---
+
+<!-- layout: cover -->
+<!-- notes: Opening slide — set the scene. -->
+
+# Title
+
+Subtitle or one-line hook
+
+---
+
+<!-- notes: -->
+
+## Slide two
+
+Your content here.
+
+---
+
+<!-- layout: center -->
+<!-- notes: -->
+
+> A closing thought.
+`;
+
+/* =============================================================================
+ * ROLE — popup (has an opener) is the AUDIENCE; otherwise EDITOR / PRESENTER
+ * ===========================================================================*/
+const IS_AUDIENCE = !!(window.opener && window.opener !== window);
+
+/* =============================================================================
+ * AUDIENCE WINDOW
+ * ===========================================================================*/
+if(IS_AUDIENCE){
+  document.getElementById("editor").remove();
+  document.getElementById("presenter").remove();
+  const root=document.getElementById("audience"); root.classList.add("on");
+  const slot=document.getElementById("aSlide");
+  const counter=document.getElementById("aCounter");
+  const fsBtn=document.getElementById("aFsBtn");
+
+  let st={ index:0, total:1 };
+  let activeDeck = parseDeck("");
+  let appliedThemeCss = THEMES.midnight.css;
+  applyThemeCss(document, appliedThemeCss);
+  const showInSlot = makeTransitioner(slot);
+
+  const fit=(animate, dir)=>{
+    const w=Math.min(window.innerWidth, window.innerHeight*REF_W/REF_H);
+    const i=Math.max(0,Math.min(st.index, activeDeck.slides.length-1));
+    const slide = activeDeck.slides[i];
+    const newSlide = renderSlide(slide, w);
+    showInSlot(newSlide, slide.transition, dir||1, animate === true);
+    counter.textContent = pad2(st.index+1)+" / "+pad2(st.total);
+  }
+  window.addEventListener("resize", ()=>{ if(slot.querySelector(".slide")) fit(false); });
+
+  // Fullscreen must be triggered by THIS window's own gesture (Safari rule).
+  fsBtn.addEventListener("click", async ()=>{
+    const el=document.documentElement;
+    const req=el.requestFullscreen||el.webkitRequestFullscreen;
+    if(req) try{ await req.call(el); }catch(e){}
+    fsBtn.style.display="none";
+    try{ await navigator.wakeLock?.request("screen"); }catch(e){}
+  });
+
+  // Receive state from the presenter; send navigation back.
+  window.addEventListener("message", e=>{
+    const m=e.data; if(!m||m.dw!==1) return;
+    if(m.type==="sync"){
+      const prevIdx = st.index;
+      if(typeof m.source==="string") activeDeck=parseDeck(m.source);
+      // Theme travels as CSS text, so themes loaded in the editor — not just
+      // built-ins — work on the audience screen with no registry handshake.
+      if(typeof m.themeCss==="string" && m.themeCss!==appliedThemeCss){
+        appliedThemeCss = m.themeCss;
+        applyThemeCss(document, appliedThemeCss);
+      }
+      st={ index:m.index, total:activeDeck.slides.length };
+      const dir = m.dir || (st.index >= prevIdx ? 1 : -1);
+      // Animate only when the presenter actually navigated; edits, theme
+      // changes and the ready handshake refresh in place.
+      fit(m.animate === true && st.index !== prevIdx, dir);
+    }
+  });
+  const navTo=(i)=>{
+    const ni=Math.max(0,Math.min(i, st.total-1));
+    if(ni===st.index) return;
+    const dir = ni > st.index ? 1 : -1;
+    st.index=ni; fit(true, dir);
+    try{ window.opener.postMessage({dw:1, type:"nav", index:ni}, "*"); }catch(e){}
+  }
+  window.addEventListener("keydown", e=>{
+    if(["ArrowRight"," ","PageDown"].includes(e.key)){ e.preventDefault(); navTo(st.index+1); }
+    else if(["ArrowLeft","PageUp"].includes(e.key)){ e.preventDefault(); navTo(st.index-1); }
+  });
+  // click advances, shift-click goes back — handy on a touch projector
+  window.addEventListener("click", e=>{ if(e.target===fsBtn) return; navTo(st.index + (e.shiftKey?-1:1)); });
+
+  try{ window.opener.postMessage({dw:1, type:"ready"}, "*"); }catch(e){}
+}
+
+/* =============================================================================
+ * EDITOR + PRESENTER WINDOW
+ * ===========================================================================*/
+if(!IS_AUDIENCE){
+  document.getElementById("audience").remove();
+
+  const $=id=>document.getElementById(id);
+  const state={ themeId:"midnight", index:0, view:"edit", source:NEW_DECK, deck:null, filename:null };
+  let audienceWin=null, watchTimer=null, timerId=null, startedAt=0, parseTimer=null;
+
+  const theme=()=>THEMES[state.themeId] || THEMES.midnight;
+  // Install the active theme's stylesheet, only when it actually changed.
+  let appliedThemeCss=null;
+  const applyTheme=()=>{
+    const css=theme().css;
+    if(css!==appliedThemeCss){ appliedThemeCss=css; applyThemeCss(document, css); }
+  };
+  const slidesOf=()=>state.deck.slides;
+  const curSlide=()=>slidesOf()[Math.max(0,Math.min(state.index, slidesOf().length-1))];
+
+  /* ---- parse the manuscript into the deck model ---- */
+  const reparse=()=>{
+    try{
+      state.deck = parseDeck(state.source);
+      if(THEMES[state.deck.meta.theme]) state.themeId = state.deck.meta.theme;
+      const w = state.deck.warnings || [];
+      $("errBox").classList.toggle("warn", true);
+      $("errBox").style.display = w.length ? "block" : "none";
+      $("errBox").textContent = w.join("\n");
+    }catch(err){
+      $("errBox").classList.remove("warn");
+      $("errBox").style.display="block";
+      $("errBox").textContent = "Parse error: " + err.message;
+      if(!state.deck) state.deck = parseDeck("");
+    }
+  };
+
+  /* ---- which slide is the caret sitting in? ---- */
+  const indexAtCaret=()=>{
+    const pos = $("src").selectionStart;
+    const ss = slidesOf();
+    for(let i=0;i<ss.length;i++){ if(pos >= ss[i].start && pos <= ss[i].end) return i; }
+    return Math.min(state.index, ss.length-1);
+  };
+
+  /* ---- measuring the bed ---- */
+  const measure=()=>{
+    const wrap=document.querySelector(".stagewrap");
+    const availW=wrap.clientWidth-72, availH=wrap.clientHeight-56;
+    return Math.max(240, Math.min(availW, availH*REF_W/REF_H));
+  }
+
+  /* ---- highlight active slide in the manuscript textarea ---- */
+  // The per-line advance must be MEASURED, not computed — engines quantize
+  // the used line height, so a hardcoded 13.5 × 1.65 drifts down the document.
+  // Crucially, it must be measured on a real TEXTAREA: a styled div probe is
+  // not guaranteed to reproduce the textarea's inner line layout exactly, and
+  // being off by even 1/100px per line is visible a few hundred lines down.
+  // So: an offscreen textarea with the same .src class, and the advance taken
+  // as a scrollHeight DIFFERENCE between two line counts — paddings and any
+  // constant first-line overhead cancel, and averaging over ~4k lines shrinks
+  // scrollHeight's integer rounding to ≲1px across even very long documents.
+  let LINE_H = 0;
+  const measureLineH = () => {
+    const probe = document.createElement("textarea");
+    probe.className = "src";
+    probe.style.cssText = "position:absolute; left:-9999px; top:0;"
+      + "width:600px; height:50px; visibility:hidden;";
+    document.body.appendChild(probe);
+    probe.value = "x";
+    const h1 = probe.scrollHeight;
+    const N = 4096;
+    probe.value = "x\n".repeat(N) + "x";   // N additional line boxes
+    const h2 = probe.scrollHeight;
+    probe.remove();
+    const h = (h2 - h1) / N;
+    LINE_H = h > 1 ? h : 13.5 * 1.65;      // sane fallback, never 0/NaN
+    return LINE_H;
+  };
+  // browser zoom can change the quantization — re-measure on resize
+  window.addEventListener("resize", () => { LINE_H = 0; });
+  const lineH = () => LINE_H || measureLineH();
+  const PAD_TOP = 14;
+  const highlightSrc = () => {
+    const s = curSlide();
+    const src = state.source;
+    const h = lineH();
+    const startLine = src.slice(0, s.start).split("\n").length - 1;
+    const endLine   = src.slice(0, s.end  ).split("\n").length - 1;
+    // keep subpixel precision — gradients accept fractional px, and rounding
+    // here would just reintroduce a (smaller) version of the same bug
+    const top    = PAD_TOP + startLine * h;
+    const bottom = PAD_TOP + (endLine + 1) * h;
+    const totalH = ta.scrollHeight || 1;
+    ta.style.backgroundImage = [
+      `linear-gradient(to bottom,`,
+      `  transparent ${top}px,`,
+      `  rgba(255,255,255,.06) ${top}px,`,
+      `  rgba(255,255,255,.06) ${bottom}px,`,
+      `  transparent ${bottom}px`,
+      `)`,
+    ].join(" ");
+    ta.style.backgroundSize = `100% ${totalH}px`;
+    ta.style.backgroundAttachment = "local";
+    ta.style.backgroundColor = "transparent";
+  };
+
+  /* ---- render: preview + rail + notes ---- */
+  let cw=0;
+  const showOnCanvas = makeTransitioner($("canvas"));
+  // animate defaults to false: only real navigation (setIndex) passes true.
+  const renderPreview=(animate, dir)=>{
+    applyTheme();
+    $("deckTitle").textContent=state.deck.meta.title;
+    $("themeBtn").textContent="Theme: "+theme().name;
+    cw=measure();
+    const newSlide = renderSlide(curSlide(), cw);
+    showOnCanvas(newSlide, curSlide().transition, dir||1, animate === true);
+    $("badgeDim").textContent=REF_W+" × "+REF_H+" · "+state.deck.meta.aspect;
+    $("badgeCount").textContent=pad2(state.index+1)+" / "+pad2(slidesOf().length);
+    $("notesText").textContent=curSlide().notes || "No notes on this slide.";
+    $("caretWhere").textContent="SLIDE "+pad2(state.index+1)+" / "+pad2(slidesOf().length);
+  };
+  const renderRail=()=>{
+    const rail=$("rail"); rail.innerHTML="";
+    // Compute thumbnail width from the rail's actual size minus padding, num label, gaps
+    const miniW=Math.max(80, rail.clientWidth - 10*2 - 16 - 10*2 - 8*2 - 2);
+    slidesOf().forEach((s,i)=>{
+      const b=document.createElement("button");
+      b.className="thumb"+(i===state.index?" active":"");
+      const num=document.createElement("span"); num.className="num"; num.textContent=pad2(i+1);
+      const mini=document.createElement("div"); mini.className="mini";
+      mini.appendChild(renderSlide(s, miniW, {still:true}));
+      b.append(num, mini);
+      b.addEventListener("click", ()=>jumpToSlide(i));
+      rail.appendChild(b);
+    });
+    const active = rail.querySelector(".thumb.active");
+    if(active) active.scrollIntoView({ block:"nearest" });
+  };
+  const updateRailActive=()=>{
+    const rail=$("rail");
+    const thumbs=rail.querySelectorAll(".thumb");
+    thumbs.forEach((b,i)=>{
+      if(i===state.index){ b.classList.add("active"); b.querySelector(".num").style.color=""; }
+      else { b.classList.remove("active"); b.querySelector(".num").style.color=""; }
+    });
+    const active=rail.querySelector(".thumb.active");
+    if(active) active.scrollIntoView({ block:"nearest" });
+  };
+  const renderEditor=(animate, dir)=>{ renderPreview(animate, dir); renderRail(); highlightSrc(); };
+
+  /* ---- caret -> slide, and rail click -> caret ---- */
+  const syncFromCaret=()=>{
+    const i=indexAtCaret();
+    if(i!==state.index){
+      state.index=i; renderPreview(false); updateRailActive(); highlightSrc();
+      pushState(); // audience always tracks the primary view's slide
+    }
+  };
+  const jumpToSlide=(i)=>{
+    state.index=i;
+    const ta=$("src"), s=slidesOf()[i];
+    // place caret just inside the slide body, skipping leading directive lines
+    let pos=s.start;
+    const slice=state.source.slice(s.start, s.end);
+    const m=slice.match(/[^\n]*[^\s][^\n]*/); // first non-blank line
+    if(m) pos = s.start + slice.indexOf(m[0]);
+    ta.focus(); ta.setSelectionRange(pos,pos);
+    // nudge the line into view
+    const before=state.source.slice(0,pos).split("\n").length;
+    ta.scrollTop = Math.max(0,(before-3) * lineH());
+    renderPreview(false); updateRailActive(); highlightSrc();
+    pushState(); // audience always tracks the primary view's slide
+  };
+
+  /* ---- textarea wiring ---- */
+  const ta=$("src");
+
+  /* ---- bootstrap: try loading deckwright_intro.md, fall back to NEW_DECK ---- */
+  const initWithSource=(src)=>{
+    state.source = src;
+    ta.value = state.source;
+    reparse(); state.index = 0;
+    ta.setSelectionRange(0, 0);
+    renderEditor();
+  };
+  // Start with a quick render so the UI isn't blank while fetching
+  initWithSource(state.source);
+  (async ()=>{
+    try {
+      const res = await fetch("deckwright_intro.md");
+      if(res.ok){
+        const text = await res.text();
+        if(text.trim()){ initWithSource(text); state.filename = "deckwright_intro.md"; }
+      }
+    } catch(e){ /* network error or file:// — keep the fallback */ }
+  })();
+
+  ta.addEventListener("input", ()=>{
+    state.source=ta.value;
+    clearTimeout(parseTimer);
+    parseTimer=setTimeout(()=>{
+      reparse();
+      state.index=indexAtCaret();
+      refresh();
+    }, 120);
+  });
+  ["keyup","click"].forEach(ev=> ta.addEventListener(ev, syncFromCaret));
+  document.addEventListener("selectionchange", ()=>{ if(document.activeElement===ta) syncFromCaret(); });
+
+  /* ---- presenter render ---- */
+  const renderPresenter=()=>{
+    applyTheme();
+    const ss=slidesOf();
+    const cur=ss[state.index], nxt=ss[state.index+1];
+    $("pCurrent").innerHTML=""; $("pCurrent").appendChild(renderSlide(cur, 640));
+    const pn=$("pNext"); pn.innerHTML="";
+    if(nxt){ pn.appendChild(renderSlide(nxt, 300, {still:true})); }
+    else { pn.innerHTML='<div style="width:300px;height:168px;display:flex;align-items:center;justify-content:center;color:var(--faint);font-family:var(--mono);font-size:12px;letter-spacing:1px">END OF DECK</div>'; }
+    $("pNotes").textContent=cur.notes || "No notes on this slide.";
+    $("pCounter").textContent=pad2(state.index+1)+" / "+pad2(ss.length);
+    updateAudienceUI();
+  }
+
+  /* ---- navigation + sync ---- */
+  const pushState=(dir, animate)=>{
+    if(audienceWin && !audienceWin.closed){
+      audienceWin.postMessage({ dw:1, type:"sync", source:state.source,
+        index:state.index, themeCss:theme().css, dir:dir||1, animate:!!animate }, "*");
+    }
+  }
+  const setIndex=(i)=>{
+    const prev = state.index;
+    const next = Math.max(0, Math.min(i, slidesOf().length-1));
+    if(next === prev) return; // no-op nav (deck ends): don't replay transitions
+    state.index = next;
+    const dir = next > prev ? 1 : -1;
+    renderMain(true, dir);
+    pushState(dir, true); // no-op if the audience window isn't open
+  }
+  // Redraw whichever view the main window is showing.
+  const renderMain=(animate, dir)=>{
+    if(state.view === "presenter") renderPresenter();
+    else renderEditor(animate, dir);
+  };
+  // Non-animated redraw + audience sync, for content refreshes (edits, theme…).
+  const refresh=()=>{ renderMain(false); pushState(); };
+  window.addEventListener("message", e=>{
+    const m=e.data; if(!m||m.dw!==1) return;
+    if(m.type==="ready"){ pushState(); updateAudienceUI(); }
+    else if(m.type==="nav"){
+      // Audience-initiated nav: it has already rendered itself, so update our
+      // state without echoing a sync back (the echo would cut its animation short).
+      const prev = state.index;
+      const next = Math.max(0, Math.min(m.index, slidesOf().length-1));
+      if(next !== prev){
+        state.index = next;
+        renderMain(true, next > prev ? 1 : -1);
+      }
+    }
+  });
+
+  /* =========================================================================
+   * WINDOW MODES — two fully independent toggles:
+   *   viewBtn / viewBtn2      main window shows Edit or Presenter view
+   *   audienceBtn / …Btn2     secondary window (always the Audience view)
+   * Switching the main view never opens, closes or disturbs the audience
+   * window, and hiding the audience never changes the main view.
+   * ======================================================================= */
+  const fmt=(ms)=>{ const s=Math.floor(ms/1000); return pad2(Math.floor(s/60))+":"+pad2(s%60); };
+
+  const audienceOpen=()=> !!(audienceWin && !audienceWin.closed);
+  const updateAudienceUI=()=>{
+    const label = audienceOpen() ? "Hide audience" : "Show audience";
+    $("audienceBtn").textContent = label;
+    $("audienceBtn2").textContent = label;
+    $("pStatus").innerHTML = audienceOpen()
+      ? 'Audience: <b>live</b>' : 'Audience: <b style="color:var(--muted)">not connected</b>';
+  };
+  const showAudience=()=>{
+    if(audienceOpen()){ try{ audienceWin.focus(); }catch(e){} return; }
+    audienceWin=window.open(location.href, "deckwright-audience",
+      "popup=yes,width=1280,height=720,left=120,top=120");
+    if(watchTimer) clearInterval(watchTimer);
+    // Watch for the user closing the audience window by hand.
+    watchTimer=setInterval(()=>{
+      if(!audienceOpen()){
+        audienceWin=null; clearInterval(watchTimer); watchTimer=null;
+      }
+      updateAudienceUI();
+    }, 1000);
+    updateAudienceUI();
+  };
+  const hideAudience=()=>{
+    try{ if(audienceOpen()) audienceWin.close(); }catch(e){}
+    audienceWin=null;
+    if(watchTimer){ clearInterval(watchTimer); watchTimer=null; }
+    updateAudienceUI();
+  };
+  const toggleAudience=()=> audienceOpen() ? hideAudience() : showAudience();
+
+  const setView=(v)=>{
+    if(v === state.view) return;
+    state.view = v;
+    if(v === "presenter"){
+      $("editor").style.display="none";
+      $("presenter").classList.add("on");
+      // Stopwatch persists across view toggles; click the timer to reset it.
+      if(!startedAt) startedAt = Date.now();
+      if(timerId) clearInterval(timerId);
+      timerId=setInterval(()=>{ $("pTimer").textContent=fmt(Date.now()-startedAt); }, 250);
+      $("pTimer").textContent=fmt(Date.now()-startedAt);
+      renderPresenter();
+    } else {
+      $("presenter").classList.remove("on");
+      $("editor").style.display="flex";
+      if(timerId){ clearInterval(timerId); timerId=null; }
+      renderEditor();
+    }
+  }
+
+  /* ---- wiring ---- */
+  const download=(name,text,mime)=>{
+    const b=new Blob([text],{type:mime}), u=URL.createObjectURL(b), a=document.createElement("a");
+    a.href=u; a.download=name; document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(()=>URL.revokeObjectURL(u),1000);
+  };
+  $("exportBtn").addEventListener("click", ()=>{
+    const safe = state.filename || (state.deck.meta.title||"deck").replace(/[^\w.-]+/g,"_") + ".md";
+    download(safe, state.source, "text/markdown");
+  });
+  $("exportAsBtn").addEventListener("click", ()=>{
+    const suggested = state.filename || (state.deck.meta.title||"deck").replace(/[^\w.-]+/g,"_") + ".md";
+    const name = prompt("Save as:", suggested);
+    if(!name) return;
+    state.filename = name.endsWith(".md") ? name : name + ".md";
+    download(state.filename, state.source, "text/markdown");
+  });
+  $("importBtn").addEventListener("click", ()=> $("importInput").click());
+  /* ---- export: fully static HTML of just what the audience sees ----
+     Run the engine once, ship only its output: every slide is drawn through
+     renderSlide() right here at reference size, and the markup is serialized
+     into a script-free page. The slide CSS is sliced verbatim from this
+     file's own stylesheet between the SLIDE-CSS markers, and the font vars
+     are read from the live :root — one definition, two consumers. Notes are
+     never included because renderSlide() never renders them. */
+  $("exportHtmlBtn").addEventListener("click", ()=>{
+    const styleText = document.querySelector("style").textContent;
+    const m = styleText.match(/\/\*\s*SLIDE-CSS-BEGIN\s*\*\/([\s\S]*?)\/\*\s*SLIDE-CSS-END\s*\*\//);
+    // The slice already carries its own "@layer deck-base{ … }" wrapper; the
+    // theme goes into deck-theme after it, exactly like the live app — except
+    // any theme @import must be hoisted to the very top of the stylesheet.
+    const th = splitThemeImports(theme().css);
+    const slideCss = (m ? m[1] : "")
+      + "\n@layer deck-theme{\n" + th.body + "\n}";
+    const fontVars = ["--sans","--mono"].map(v => {
+      const fm = styleText.match(new RegExp(v.replace(/-/g,"\\-") + "\\s*:\\s*([^;]+);"));
+      return fm ? v + ":" + fm[1].trim() + ";" : "";
+    }).join(" ");
+    const slidesHtml = slidesOf().map(s => renderSlide(s, REF_W).outerHTML).join("\n");
+    const escd = s => String(s).replace(/&/g,"&amp;").replace(/</g,"&lt;");
+    const page = `<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>${escd(state.deck.meta.title || "Deck")}</title>
+<style>
+${th.imports}
+/* Generated by Deckwright — static export. No scripts, just the slides. */
+@layer deck-base, deck-theme;
+:root{ ${fontVars} color-scheme:dark; }
+html,body{ margin:0; }
+body{ background:#0c0f16; font-family:var(--sans);
+  display:flex; flex-direction:column; align-items:center;
+  gap:28px; padding:28px 16px; }
+/* Pure-CSS fit-to-window. Browsers without length division in calc()
+   ignore this and show slides at native ${REF_W}px (scroll to pan). */
+.slide{ zoom:min(1, calc((100vw - 32px) / ${REF_W}px));
+  flex:0 0 auto; border-radius:6px; box-shadow:0 18px 50px rgba(0,0,0,.5); }
+@media print{
+  body{ background:#fff; padding:0; gap:0; }
+  .slide{ zoom:1; border-radius:0; box-shadow:none; break-after:page; }
+}
+${slideCss}
+</style>
+</head>
+<body>
+${slidesHtml}
+</body>
+</html>
+`;
+    const base = (state.filename || state.deck.meta.title || "deck")
+      .replace(/\.md$/i,"").replace(/[^\w.-]+/g,"_");
+    download(base + ".html", page, "text/html");
+  });
+  $("importInput").addEventListener("change", e=>{
+    const f=e.target.files && e.target.files[0]; if(!f) return;
+    const r=new FileReader();
+    r.onload=()=>{
+      state.source=String(r.result);
+      state.filename = f.name;
+      ta.value=state.source;
+      reparse(); state.index=0;
+      ta.setSelectionRange(0,0);
+      refresh();
+    };
+    r.readAsText(f); e.target.value="";
+  });
+
+  $("newBtn").addEventListener("click", ()=>{
+    if(state.source !== NEW_DECK){
+      if(!confirm("Start a new deck? Unsaved changes will be lost.")) return;
+    }
+    state.source = NEW_DECK;
+    state.filename = "new_deck.md";
+    ta.value = state.source;
+    reparse(); state.index = 0;
+    ta.setSelectionRange(0, 0);
+    refresh();
+  });
+  $("viewBtn").addEventListener("click", ()=>setView("presenter"));
+  $("viewBtn2").addEventListener("click", ()=>setView("edit"));
+  $("audienceBtn").addEventListener("click", toggleAudience);
+  $("audienceBtn2").addEventListener("click", toggleAudience);
+  $("pTimer").title = "Click to reset";
+  $("pTimer").style.cursor = "pointer";
+  $("pTimer").addEventListener("click", ()=>{ startedAt=Date.now(); $("pTimer").textContent=fmt(0); });
+  $("pPrev").addEventListener("click", ()=>setIndex(state.index-1));
+  $("pNext2").addEventListener("click", ()=>setIndex(state.index+1));
+  $("themeBtn").addEventListener("click", ()=>{
+    const ids=Object.keys(THEMES);
+    state.themeId=ids[(ids.indexOf(state.themeId)+1)%ids.length];
+    refresh();
+  });
+  /* Loaded themes are session-only: same format as the built-ins, registered
+     into the same registry — the Theme button cycles them, decks reference
+     them by id in front matter, and the audience gets the CSS via sync. */
+  $("themeLoadBtn").addEventListener("click", ()=> $("themeInput").click());
+  $("themeInput").addEventListener("change", e=>{
+    const f=e.target.files && e.target.files[0]; if(!f) return;
+    const r=new FileReader();
+    r.onload=()=>{
+      try{
+        const t=registerTheme(String(r.result));
+        state.themeId=t.id;
+        refresh();
+      }catch(err){ alert(err.message); }
+    };
+    r.readAsText(f); e.target.value="";
+  });
+  $("notesBtn").addEventListener("click", ()=>{
+    const p=$("notesPanel"), hidden=p.style.display==="none";
+    p.style.display=hidden?"block":"none";
+    $("notesBtn").textContent=hidden?"Hide notes":"Show notes";
+  });
+
+  window.addEventListener("keydown", e=>{
+    if(e.key==="Escape" && state.view==="presenter"){ setView("edit"); return; }
+    const tag=(e.target.tagName||"").toLowerCase();
+    const typing = tag==="input" || tag==="textarea" || tag==="select" || e.target.isContentEditable;
+    // While editing the manuscript, let arrows move the caret (caret-sync picks the slide).
+    if(typing && state.view==="edit") return;
+    if(["ArrowRight"," ","PageDown"].includes(e.key)){ e.preventDefault(); setIndex(state.index+1); }
+    else if(["ArrowLeft","PageUp"].includes(e.key)){ e.preventDefault(); setIndex(state.index-1); }
+  });
+  window.addEventListener("resize", ()=>{ if(state.view==="edit") renderEditor(); });
+  window.addEventListener("beforeunload", ()=>{ try{ audienceWin && audienceWin.close(); }catch(e){} });
+
+  /* ---- draggable pane dividers ---- */
+  (()=>{
+    const rail=$("rail"), main=document.querySelector(".main"), editpane=document.querySelector(".editpane");
+    const dL=$("dividerLeft"), dR=$("dividerRight");
+    const MIN_RAIL=120, MAX_RAIL=360, MIN_EDIT=240, MIN_MAIN=300;
+    let savedRailW=null, savedEditW=null;
+
+    const startDrag=(divider, side)=>{
+      let startX, startW;
+      const pane = side==="left" ? rail : editpane;
+
+      // if neighbor is collapsed, don't drag — double-click restores instead
+      if(pane.classList.contains("collapsed")) return;
+
+      const onDown=(ex)=>{
+        startX = ex; startW = pane.getBoundingClientRect().width;
+        divider.classList.add("dragging");
+        document.body.classList.add("col-resizing");
+      };
+      const onMove=(ex)=>{
+        if(startX==null) return;
+        const bodyW = document.querySelector(".body").getBoundingClientRect().width;
+        const otherFixed = (side==="left" ? editpane : rail).getBoundingClientRect().width;
+        const dividers = 12; // two 6px dividers
+        const maxForMain = bodyW - otherFixed - dividers - MIN_MAIN;
+        let delta = side==="left" ? (ex - startX) : (startX - ex);
+        let newW = Math.round(startW + delta);
+        if(side==="left"){
+          newW = Math.max(MIN_RAIL, Math.min(newW, MAX_RAIL, maxForMain));
+        } else {
+          newW = Math.max(MIN_EDIT, Math.min(newW, maxForMain));
+        }
+        pane.style.width = newW + "px";
+        // live-update preview since stage size changed
+        renderPreview();
+      };
+      const onUp=()=>{
+        startX=null;
+        divider.classList.remove("dragging");
+        document.body.classList.remove("col-resizing");
+        renderEditor(); // full re-render with new rail thumbnails
+      };
+
+      const md=e=>{ e.preventDefault(); onDown(e.clientX); };
+      const mm=e=>{ onMove(e.clientX); };
+      const mu=()=>{ onUp(); document.removeEventListener("mousemove",mm); document.removeEventListener("mouseup",mu); };
+      divider.addEventListener("mousedown", e=>{
+        if(pane.classList.contains("collapsed")) return;
+        md(e); document.addEventListener("mousemove",mm); document.addEventListener("mouseup",mu);
+      });
+      // touch
+      divider.addEventListener("touchstart", e=>{
+        if(pane.classList.contains("collapsed")) return;
+        e.preventDefault(); onDown(e.touches[0].clientX);
+        const tm=ev=>{ onMove(ev.touches[0].clientX); };
+        const tu=()=>{ onUp(); divider.removeEventListener("touchmove",tm); divider.removeEventListener("touchend",tu); };
+        divider.addEventListener("touchmove",tm,{passive:false});
+        divider.addEventListener("touchend",tu);
+      },{passive:false});
+    };
+
+    startDrag(dL, "left");
+    startDrag(dR, "right");
+
+    // double-click to collapse / restore
+    dL.addEventListener("dblclick", ()=>{
+      if(rail.classList.contains("collapsed")){
+        rail.classList.remove("collapsed");
+        if(savedRailW) rail.style.width = savedRailW;
+        dL.classList.remove("neighbor-collapsed");
+      } else {
+        savedRailW = rail.style.width || getComputedStyle(rail).width;
+        rail.classList.add("collapsed");
+        dL.classList.add("neighbor-collapsed");
+      }
+      renderEditor();
+    });
+    dR.addEventListener("dblclick", ()=>{
+      if(editpane.classList.contains("collapsed")){
+        editpane.classList.remove("collapsed");
+        if(savedEditW) editpane.style.width = savedEditW;
+        dR.classList.remove("neighbor-collapsed");
+      } else {
+        savedEditW = editpane.style.width || getComputedStyle(editpane).width;
+        editpane.classList.add("collapsed");
+        dR.classList.add("neighbor-collapsed");
+      }
+      renderEditor();
+    });
+  })();
+}
+</script>
+</body>
+</html>
