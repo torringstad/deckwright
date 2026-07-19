@@ -1,0 +1,4 @@
+.aider*
+.env
+.DS_Store
+/.aistatus_logs/

@@ -10,6 +10,8 @@ No build step, no dependencies.
 
 ## Getting started
 
+Some alternatives:
+
 - Check out from GitHub: 
   - `git clone git@github.com:torringstad/deckwright.git`
   - `https://github.com/torringstad/deckwright.git` 
@@ -20,5 +22,10 @@ and put it anywhere your browser can reach it.
 
 - Live demo: https://www.pvv.ntnu.no/~torhr/deckwright/deckwright.html
 
+The live demo will automatically open the intro-document ([deckwright_intro.md](https://github.com/torringstad/deckwright/blob/main/deckwright_intro.md)).
 
-The live demo will automatically open an intro-document.
+Gallery: [deckwright_intro_gallery](deckwright_intro_gallery)
+
+HTML export: [deckwright_intro.html](deckwright_intro.html)
+
+
