@@ -585,8 +585,12 @@ const escAttr = s => escHtml(s).replace(/"/g,"&quot;");
 
 function mdInline(src){
   const codes=[];
-  // protect inline code first so its contents are never re-parsed
-  let s = src.replace(/`([^`]+)`/g, (_,c)=>{ codes.push(c); return "\u0000"+(codes.length-1)+"\u0000"; });
+  // protect inline code first so its contents are never re-parsed for
+  // markdown syntax — but the \<!-- escape still applies inside code,
+  // same as it does in fenced code blocks, so unescape it here too.
+  let s = src.replace(/`([^`]+)`/g, (_,c)=>{
+    codes.push(c.replace(/\\(<!--)/g, "$1")); return "\u0000"+(codes.length-1)+"\u0000";
+  });
   s = s.replace(/\\(<!--)/g, "$1"); // \<!-- shows as a literal comment
   s = escHtml(s);
   s = s.replace(/!\[([^\]]*)\]\(([^)\s]+)\)/g, (_,alt,u)=>`<img src="${escAttr(u)}" alt="${escAttr(alt)}">`);
