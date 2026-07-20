@@ -10,8 +10,16 @@
      No build, no deps, openable from disk.
 
      A slide is FLOWING MARKDOWN, laid out by CSS + theme + a layout hint.
-     The whole deck is one markdown document in the left pane. The document
-     IS the file: import/export is just load/save text.
+     The whole deck is one markdown document in the left pane.
+
+     The unit of work is a DECKWRIGHT DOCUMENT: one root .md manuscript,
+     optionally root .css themes, plus assets (nested dirs allowed). Relative
+     references resolve exactly as a web server serving the document
+     directory would resolve them. The document maps three ways: a .ddz zip
+     for transport (Load / Save .ddz), IndexedDB for persistence between
+     sessions, and — later — a served directory ("document server mode").
+     A bare .md remains the degenerate one-file document; plain load/save
+     of the manuscript alone still works.
 
      ONE render path: renderSlide() draws the preview, every thumbnail, the
      presenter mirror, and the audience screen. One way to draw a slide.
@@ -77,6 +85,37 @@
     font-size:13.5px; line-height:1.65; padding:14px 16px 40px; tab-size:2;
     white-space:pre; overflow:auto; transition:background .15s; }
   .src::selection{ background:rgba(210,162,76,.28); }
+  .src.droptarget{ background:rgba(210,162,76,.07); }
+
+  /* ---- document assets panel (bottom of the edit pane) ---- */
+  .assets-toggle{ flex:0 0 auto; background:transparent; color:var(--muted);
+    border:1px solid var(--line); border-radius:6px; padding:3px 9px;
+    font-family:var(--mono); font-size:10.5px; letter-spacing:1px; }
+  .assets-toggle:hover{ color:var(--text); background:var(--line-soft); }
+  .assets-toggle.open{ color:var(--brass); border-color:var(--brass-dim); }
+  .assets{ flex:0 0 auto; max-height:34%; display:flex; flex-direction:column;
+    border-top:1px solid var(--line-soft); background:var(--rail); }
+  .assets .a-head{ flex:0 0 auto; display:flex; align-items:center; gap:10px;
+    padding:8px 14px 4px; }
+  .assets .a-head .label{ font-family:var(--mono); font-size:10.5px;
+    letter-spacing:2px; color:var(--faint); }
+  .a-btn{ background:transparent; color:var(--muted); border:1px solid var(--line);
+    border-radius:6px; padding:3px 9px; font-family:var(--mono); font-size:10.5px; }
+  .a-btn:hover{ color:var(--text); background:var(--line-soft); }
+  .assets .a-list{ flex:1 1 auto; overflow:auto; padding:4px 6px 8px; }
+  .a-row{ display:flex; align-items:center; gap:8px; padding:4px 8px;
+    border-radius:6px; font-family:var(--mono); font-size:11.5px; }
+  .a-row:hover{ background:var(--line-soft); }
+  .a-row .a-name{ flex:1 1 auto; min-width:0; overflow:hidden;
+    text-overflow:ellipsis; white-space:nowrap; color:var(--text); }
+  .a-row .a-name.a-theme{ color:var(--brass); }
+  .a-row .a-size{ flex:0 0 auto; color:var(--faint); font-size:10.5px; }
+  .a-row .a-act{ flex:0 0 auto; background:transparent; border:0; color:var(--muted);
+    font-size:12px; padding:1px 5px; border-radius:4px; visibility:hidden; }
+  .a-row:hover .a-act{ visibility:visible; }
+  .a-row .a-act:hover{ color:var(--text); background:var(--line); }
+  .a-empty{ padding:6px 10px 10px; color:var(--faint); font-family:var(--mono);
+    font-size:11px; }
 
   /* ---- center: the bed ---- */
   .main{ flex:1 1 0%; display:flex; flex-direction:column; min-width:0; }
@@ -306,17 +345,19 @@
       <span class="deck-title" id="deckTitle"></span>
       <span class="spacer"></span>
       <button class="btn" id="newBtn">New</button>
-      <button class="btn" id="importBtn">Load</button>
+      <button class="btn" id="importBtn" title="Open a document: a .ddz (zipped deckwright document) or a bare .md">Load</button>
       <button class="btn" id="exportBtn">Save</button>
       <button class="btn" id="exportAsBtn">Save as…</button>
+      <button class="btn" id="exportDdzBtn" title="Save the whole document — manuscript, theme and assets — as one .ddz file">Save .ddz</button>
       <button class="btn" id="exportHtmlBtn" title="Static, script-free HTML of the rendered slides">Export HTML</button>
       <button class="btn" id="themeBtn"></button>
       <button class="btn" id="themeLoadBtn" title="Load a theme: a .css file with a /* @theme id &quot;Name&quot; */ header">Load theme…</button>
       <button class="btn" id="notesBtn">Hide notes</button>
       <button class="btn" id="audienceBtn">Show audience</button>
       <button class="btn primary" id="viewBtn">▸ Presenter view</button>
-      <input type="file" id="importInput" accept=".md,.markdown,text/markdown" style="display:none" />
+      <input type="file" id="importInput" accept=".md,.markdown,.ddz,text/markdown,application/zip" style="display:none" />
       <input type="file" id="themeInput" accept=".css,text/css" style="display:none" />
+      <input type="file" id="assetInput" multiple style="display:none" />
     </div>
     <div class="body">
       <nav class="rail" id="rail"></nav>
@@ -343,9 +384,19 @@
         <div class="head">
           <span class="label">MANUSCRIPT</span>
           <span class="where" id="caretWhere"></span>
+          <button class="assets-toggle" id="assetsBtn"
+            title="Files bundled with this document — drop files on the manuscript to add them">Assets</button>
         </div>
         <textarea class="src" id="src" spellcheck="false"
           autocomplete="off" autocapitalize="off"></textarea>
+        <div class="assets" id="assetsPanel" style="display:none">
+          <div class="a-head">
+            <span class="label">DOCUMENT ASSETS</span>
+            <span class="spacer"></span>
+            <button class="a-btn" id="assetAddBtn">+ Add files…</button>
+          </div>
+          <div class="a-list" id="assetsList"></div>
+        </div>
         <div class="err" id="errBox" style="display:none"></div>
       </section>
     </div>
@@ -480,6 +531,62 @@ function placeholderSrc(name){
 }
 
 /* =============================================================================
+ * ASSET RESOLUTION — how relative references reach the files of a document.
+ *
+ * A deckwright document is a set of files with one markdown manuscript at its
+ * root (see the DOCUMENT section further down). Relative references in the
+ * manuscript and the theme CSS resolve against the document root, exactly as
+ * a web server serving the document directory would resolve them — that
+ * equivalence is the design invariant, and it is why the manuscript and any
+ * theme .css are required to live at the root.
+ *
+ * The markdown engine stays pure string-out: every emitted src/url passes
+ * through RESOLVE_SRC. The editor and the audience window each install a
+ * resolver mapping document paths to blob: URLs of their local copies of the
+ * assets; the static HTML export runs with the hook bypassed so relative
+ * references survive verbatim (the exported file is expected to live next to
+ * the assets, i.e. in a served document directory). Anything that is not a
+ * plain relative path — absolute URLs, data:, protocol-relative — passes
+ * through untouched, and unknown relative paths fall through unchanged so
+ * the existing onerror placeholder still reports them.
+ * ===========================================================================*/
+let RESOLVE_SRC = s => s;
+
+/** A reference -> normalized document path, or null if it isn't one. */
+function docRelPath(src){
+  const s = String(src);
+  if(!s || /^[a-z][a-z0-9+.-]*:/i.test(s) || s.startsWith("/")) return null;
+  const p = s.replace(/^\.\//,"");
+  const segs = p.split("/");
+  if(segs.some(x => x === "" || x === "." || x === "..")) return null;
+  return p;
+}
+
+/** Build a resolver over a Map<path, blobUrl-producing fn>. Tries the raw
+ *  path, then its percent-decoded form (inline markdown image syntax cannot
+ *  carry spaces, so "my%20chart.png" is the legitimate spelling there). */
+function makeResolver(urlFor){
+  return src => {
+    const p = docRelPath(src);
+    if(p == null) return src;
+    let u = urlFor(p);
+    if(!u && /%/.test(p)){
+      try{ u = urlFor(decodeURIComponent(p)); }catch(e){}
+    }
+    return u || src;
+  };
+}
+
+/** Rewrite url(...) tokens in theme CSS through a resolver, so a document
+ *  theme can reference document assets. Non-document urls pass untouched. */
+function rewriteCssUrls(css, resolve){
+  return String(css).replace(/url\(\s*(['"]?)([^'")]+)\1\s*\)/gi, (m,q,u)=>{
+    const r = resolve(u);
+    return r === u ? m : 'url("' + r + '")';
+  });
+}
+
+/* =============================================================================
  * BLOCK DIRECTIVES — positional <!-- name: value --> lines, rendered IN PLACE
  * by the markdown engine. Same surface syntax as the slide directives above
  * renderSlide's world (layout, bg, …), but a different class: slide directives
@@ -565,7 +672,7 @@ function renderImage(value){
   const cap = o.caption ? `<figcaption>${mdInline(o.caption)}</figcaption>` : "";
   return `<figure class="${cls.join(" ")}"`
     + (style.length ? ` style="${escAttr(style.join(";"))}"` : "") + ">"
-    + `<img src="${escAttr(o.src)}" alt="${escAttr(alt)}" decoding="async"`
+    + `<img src="${escAttr(RESOLVE_SRC(o.src))}" alt="${escAttr(alt)}" decoding="async"`
     + ` onerror="this.onerror=null;this.src='${placeholderSrc(o.src)}'">`
     + cap + `</figure>`;
 }
@@ -593,7 +700,7 @@ function mdInline(src){
   });
   s = s.replace(/\\(<!--)/g, "$1"); // \<!-- shows as a literal comment
   s = escHtml(s);
-  s = s.replace(/!\[([^\]]*)\]\(([^)\s]+)\)/g, (_,alt,u)=>`<img src="${escAttr(u)}" alt="${escAttr(alt)}">`);
+  s = s.replace(/!\[([^\]]*)\]\(([^)\s]+)\)/g, (_,alt,u)=>`<img src="${escAttr(RESOLVE_SRC(u))}" alt="${escAttr(alt)}">`);
   s = s.replace(/\[([^\]]+)\]\(([^)\s]+)\)/g, (_,t,u)=>`<a href="${escAttr(u)}">${t}</a>`);
   s = s.replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
   s = s.replace(/(^|[^\*])\*([^*\s][^*]*?)\*/g, "$1<em>$2</em>");
@@ -643,7 +750,7 @@ function mdToHtml(md){
     }
     // standalone image line -> figure block
     let im = line.match(/^\s*!\[([^\]]*)\]\(([^)\s]+)\)\s*$/);
-    if(im){ out += `<p><img src="${escAttr(im[2])}" alt="${escAttr(im[1])}"></p>`; i++; continue; }
+    if(im){ out += `<p><img src="${escAttr(RESOLVE_SRC(im[2]))}" alt="${escAttr(im[1])}"></p>`; i++; continue; }
     // block directive line -> rendered in place; unknown names drop out here
     // (parseSlide warned about them already). Escaped \<!-- doesn't match.
     let bd = line.match(DIRECTIVE_LINE_RE);
@@ -874,7 +981,8 @@ function renderSlide(slide, width, opts){
   wrap.style.width = width + "px"; wrap.style.height = height + "px";
   if(slide.bg){
     if(/^url\(/i.test(slide.bg)){
-      wrap.style.backgroundImage = slide.bg;
+      // a document-relative url() resolves like every other reference
+      wrap.style.backgroundImage = rewriteCssUrls(slide.bg, RESOLVE_SRC);
       wrap.style.backgroundSize = "cover"; wrap.style.backgroundPosition = "center";
     } else {
       wrap.style.background = slide.bg;
@@ -1009,6 +1117,134 @@ Your content here.
 `;
 
 /* =============================================================================
+ * .DDZ — the transport format of a deckwright document: a plain zip.
+ *
+ * Contents: exactly one .md at the root (any name — that's the manuscript),
+ * optionally .css themes at the root, and any number of assets, nested
+ * directories allowed. Nothing else is special; unknown files ride along and
+ * round-trip untouched.
+ *
+ * No-dependency zip, in keeping with the project: WRITING emits stored
+ * (method 0) entries — a trivially valid zip every tool opens, and the bulk
+ * of a deck is images that are already compressed; READING accepts stored
+ * and deflated entries, inflating via DecompressionStream("deflate-raw"),
+ * which every current browser ships. Central-directory sizes are used for
+ * slicing, so data-descriptor zips (streamed writers) read fine too.
+ * ===========================================================================*/
+const CRC_TABLE = (()=>{
+  const t = new Uint32Array(256);
+  for(let n=0;n<256;n++){
+    let c=n;
+    for(let k=0;k<8;k++) c = (c&1) ? 0xEDB88320 ^ (c>>>1) : c>>>1;
+    t[n]=c;
+  }
+  return t;
+})();
+function crc32(bytes){
+  let c = 0xFFFFFFFF;
+  for(let i=0;i<bytes.length;i++) c = CRC_TABLE[(c ^ bytes[i]) & 0xFF] ^ (c>>>8);
+  return (c ^ 0xFFFFFFFF) >>> 0;
+}
+
+/** entries: [{name, data:Uint8Array}] -> zip file bytes (stored entries). */
+function zipWrite(entries){
+  const enc = new TextEncoder();
+  const now = new Date();
+  const dosTime = (now.getHours()<<11) | (now.getMinutes()<<5) | (now.getSeconds()>>1);
+  const dosDate = ((now.getFullYear()-1980)<<9) | ((now.getMonth()+1)<<5) | now.getDate();
+  const chunks=[], central=[];
+  let offset=0;
+  const push=(c)=>{ chunks.push(c); offset += c.length; };
+  const u16=(v)=>[v&255,(v>>>8)&255];
+  const u32=(v)=>[v&255,(v>>>8)&255,(v>>>16)&255,(v>>>24)&255];
+  for(const e of entries){
+    const name = enc.encode(e.name), data = e.data, crc = crc32(data);
+    const localOffset = offset;
+    // sig, version 2.0, flags: bit 11 = UTF-8 names, method 0
+    push(new Uint8Array([0x50,0x4B,0x03,0x04, ...u16(20), ...u16(0x0800), ...u16(0),
+      ...u16(dosTime), ...u16(dosDate), ...u32(crc), ...u32(data.length),
+      ...u32(data.length), ...u16(name.length), ...u16(0)]));
+    push(name); push(data);
+    central.push({ name, crc, size:data.length, localOffset });
+  }
+  const cdStart = offset;
+  for(const c of central){
+    push(new Uint8Array([0x50,0x4B,0x01,0x02, ...u16(20), ...u16(20), ...u16(0x0800),
+      ...u16(0), ...u16(dosTime), ...u16(dosDate), ...u32(c.crc), ...u32(c.size),
+      ...u32(c.size), ...u16(c.name.length), ...u16(0), ...u16(0), ...u16(0),
+      ...u16(0), ...u32(0), ...u32(c.localOffset)]));
+    push(c.name);
+  }
+  const cdSize = offset - cdStart;
+  push(new Uint8Array([0x50,0x4B,0x05,0x06, ...u16(0), ...u16(0),
+    ...u16(central.length), ...u16(central.length), ...u32(cdSize),
+    ...u32(cdStart), ...u16(0)]));
+  const out = new Uint8Array(offset);
+  let p=0; for(const c of chunks){ out.set(c,p); p+=c.length; }
+  return out;
+}
+
+async function inflateRaw(bytes){
+  const stream = new Blob([bytes]).stream()
+    .pipeThrough(new DecompressionStream("deflate-raw"));
+  return new Uint8Array(await new Response(stream).arrayBuffer());
+}
+
+/** zip bytes -> Map<path, Uint8Array>. Junk and unsafe entries are skipped:
+ *  directories, __MACOSX, .DS_Store/Thumbs.db, absolute paths, ".."
+ *  segments. Backslash separators (old Windows tools) are normalized. */
+async function zipRead(buf){
+  const b = new Uint8Array(buf);
+  const dv = new DataView(buf);
+  // EOCD: scan back over the (≤64K) zip comment for PK\x05\x06
+  let eocd = -1;
+  for(let i=b.length-22; i>=0 && i>=b.length-22-65535; i--){
+    if(b[i]===0x50 && b[i+1]===0x4B && b[i+2]===0x05 && b[i+3]===0x06){ eocd=i; break; }
+  }
+  if(eocd < 0) throw new Error("Not a zip file (no end-of-central-directory).");
+  const count = dv.getUint16(eocd+10, true);
+  let p = dv.getUint32(eocd+16, true); // central directory offset
+  const dec = new TextDecoder("utf-8");
+  const files = new Map();
+  for(let n=0;n<count;n++){
+    if(dv.getUint32(p, true) !== 0x02014B50) throw new Error("Corrupt zip central directory.");
+    const method  = dv.getUint16(p+10, true);
+    const csize   = dv.getUint32(p+20, true);
+    const nameLen = dv.getUint16(p+28, true);
+    const extraLen= dv.getUint16(p+30, true);
+    const cmtLen  = dv.getUint16(p+32, true);
+    const local   = dv.getUint32(p+42, true);
+    let name = dec.decode(b.subarray(p+46, p+46+nameLen)).replace(/\\/g,"/");
+    p += 46 + nameLen + extraLen + cmtLen;
+    if(name.endsWith("/")) continue;                        // directory entry
+    if(/^__MACOSX\//.test(name)) continue;                  // resource-fork junk
+    if(/(^|\/)(\.DS_Store|Thumbs\.db)$/.test(name)) continue;
+    if(name.startsWith("/") || name.split("/").some(s=>s===""||s===".."||s===".")) continue;
+    // data sits after the LOCAL header, whose name/extra lengths may differ
+    if(dv.getUint32(local, true) !== 0x04034B50) throw new Error("Corrupt zip entry.");
+    const lNameLen = dv.getUint16(local+26, true);
+    const lExtraLen= dv.getUint16(local+28, true);
+    const start = local + 30 + lNameLen + lExtraLen;
+    const raw = b.subarray(start, start+csize);
+    if(method === 0)      files.set(name, raw.slice());
+    else if(method === 8) files.set(name, await inflateRaw(raw));
+    else throw new Error(`Unsupported zip compression (method ${method}) for "${name}".`);
+  }
+  return files;
+}
+
+/** Extension -> mime, so blob: URLs render right (svg in <img> needs it). */
+const MIME_BY_EXT = { png:"image/png", jpg:"image/jpeg", jpeg:"image/jpeg",
+  gif:"image/gif", webp:"image/webp", avif:"image/avif", svg:"image/svg+xml",
+  bmp:"image/bmp", ico:"image/x-icon", css:"text/css", md:"text/markdown",
+  txt:"text/plain", json:"application/json", woff2:"font/woff2", woff:"font/woff",
+  ttf:"font/ttf", otf:"font/otf", mp4:"video/mp4", webm:"video/webm",
+  mp3:"audio/mpeg", ogg:"audio/ogg", wav:"audio/wav" };
+const mimeOf = path => MIME_BY_EXT[(path.split(".").pop()||"").toLowerCase()] || "";
+const IMAGE_EXT = new Set(["png","jpg","jpeg","gif","webp","avif","svg","bmp"]);
+const isImagePath = path => IMAGE_EXT.has((path.split(".").pop()||"").toLowerCase());
+
+/* =============================================================================
  * ROLE — popup (has an opener) is the AUDIENCE; otherwise EDITOR / PRESENTER
  * ===========================================================================*/
 const IS_AUDIENCE = !!(window.opener && window.opener !== window);
@@ -1026,8 +1262,24 @@ if(IS_AUDIENCE){
 
   let st={ index:0, total:1 };
   let activeDeck = parseDeck("");
+
+  /* The audience holds its OWN copies of the document assets, sent by the
+     editor over postMessage (Blobs structured-clone across windows, which
+     sidesteps every cross-window blob:-URL scoping question). It resolves
+     references against them exactly like the editor does. */
+  const aAssets = new Map();               // path -> Blob
+  const aUrls   = new Map();               // path -> blob: URL
+  const aUrlFor = p => {
+    if(!aAssets.has(p)) return null;
+    if(!aUrls.has(p)) aUrls.set(p, URL.createObjectURL(aAssets.get(p)));
+    return aUrls.get(p);
+  };
+  RESOLVE_SRC = makeResolver(aUrlFor);
+
   let appliedThemeCss = THEMES.midnight.css;
-  applyThemeCss(document, appliedThemeCss);
+  const applyA = () => applyThemeCss(document,
+    rewriteCssUrls(appliedThemeCss, RESOLVE_SRC));
+  applyA();
   const showInSlot = makeTransitioner(slot);
 
   const fit=(animate, dir)=>{
@@ -1052,6 +1304,15 @@ if(IS_AUDIENCE){
   // Receive state from the presenter; send navigation back.
   window.addEventListener("message", e=>{
     const m=e.data; if(!m||m.dw!==1) return;
+    if(m.type==="assets"){
+      // full replacement each time — asset sets are small and this is simple
+      for(const u of aUrls.values()) URL.revokeObjectURL(u);
+      aUrls.clear(); aAssets.clear();
+      for(const [p,blob] of Object.entries(m.files || {})) aAssets.set(p, blob);
+      applyA();                              // theme may reference assets
+      if(slot.querySelector(".slide")) fit(false);
+      return;
+    }
     if(m.type==="sync"){
       const prevIdx = st.index;
       if(typeof m.source==="string") activeDeck=parseDeck(m.source);
@@ -1059,7 +1320,7 @@ if(IS_AUDIENCE){
       // built-ins — work on the audience screen with no registry handshake.
       if(typeof m.themeCss==="string" && m.themeCss!==appliedThemeCss){
         appliedThemeCss = m.themeCss;
-        applyThemeCss(document, appliedThemeCss);
+        applyA();
       }
       st={ index:m.index, total:activeDeck.slides.length };
       const dir = m.dir || (st.index >= prevIdx ? 1 : -1);
@@ -1095,11 +1356,89 @@ if(!IS_AUDIENCE){
   const state={ themeId:"midnight", index:0, view:"edit", source:NEW_DECK, deck:null, filename:null };
   let audienceWin=null, watchTimer=null, timerId=null, startedAt=0, parseTimer=null;
 
+  /* =========================================================================
+   * DOCUMENT — the unit the user works on: the manuscript plus its files.
+   *
+   * The manuscript itself is state.source (the textarea is the live truth)
+   * and state.filename is its root name; doc.assets holds every OTHER file
+   * of the document, path -> Blob, including root .css themes. The three
+   * mappings of the concept share this one model: .ddz load/save zips it,
+   * browser storage persists it, and the future server mode is just this
+   * tree written to disk.
+   * ======================================================================= */
+  const doc = { assets: new Map() };                 // path -> Blob
+
+  // blob: URLs for the assets, made lazily, dropped when the file changes
+  const assetUrls = new Map();
+  const assetUrlFor = p => {
+    if(!doc.assets.has(p)) return null;
+    if(!assetUrls.has(p)) assetUrls.set(p, URL.createObjectURL(doc.assets.get(p)));
+    return assetUrls.get(p);
+  };
+  const dropAssetUrl = p => {
+    const u=assetUrls.get(p);
+    if(u){ URL.revokeObjectURL(u); assetUrls.delete(p); }
+  };
+  RESOLVE_SRC = makeResolver(assetUrlFor);
+  /** Run fn with resolution bypassed — the static export uses this so the
+   *  exported HTML keeps relative references verbatim. */
+  const withRawSrc = fn => {
+    const saved = RESOLVE_SRC; RESOLVE_SRC = s=>s;
+    try{ return fn(); } finally { RESOLVE_SRC = saved; }
+  };
+
+  /* ---- persistence: the current document, autosaved to IndexedDB ----
+     Best-effort by design: storage can be unavailable or evicted (private
+     windows, file:// in some browsers) and the app must not care — every
+     operation degrades to the in-memory document. */
+  const idbGet = key => new Promise(res=>{
+    try{
+      const rq = indexedDB.open("deckwright", 1);
+      rq.onupgradeneeded = ()=> rq.result.createObjectStore("kv");
+      rq.onerror = ()=> res(undefined);
+      rq.onsuccess = ()=>{
+        try{
+          const tx = rq.result.transaction("kv","readonly");
+          const g = tx.objectStore("kv").get(key);
+          g.onsuccess = ()=>{ res(g.result); rq.result.close(); };
+          g.onerror   = ()=>{ res(undefined); rq.result.close(); };
+        }catch(e){ res(undefined); }
+      };
+    }catch(e){ res(undefined); }
+  });
+  const idbPut = (key,val) => new Promise(res=>{
+    try{
+      const rq = indexedDB.open("deckwright", 1);
+      rq.onupgradeneeded = ()=> rq.result.createObjectStore("kv");
+      rq.onerror = ()=> res(false);
+      rq.onsuccess = ()=>{
+        try{
+          const tx = rq.result.transaction("kv","readwrite");
+          tx.objectStore("kv").put(val, key);
+          tx.oncomplete = ()=>{ res(true); rq.result.close(); };
+          tx.onerror    = ()=>{ res(false); rq.result.close(); };
+        }catch(e){ res(false); }
+      };
+    }catch(e){ res(false); }
+  });
+  let persistTimer=null;
+  const persistNow = ()=>{
+    const assets={}; doc.assets.forEach((b,p)=> assets[p]=b);
+    idbPut("current", { v:1, source:state.source, filename:state.filename,
+      themeId:state.themeId, assets });
+  };
+  const persistSoon = ()=>{
+    clearTimeout(persistTimer);
+    persistTimer=setTimeout(persistNow, 800);
+  };
+
   const theme=()=>THEMES[state.themeId] || THEMES.midnight;
   // Install the active theme's stylesheet, only when it actually changed.
+  // Document paths in url(...) are rewritten to blob: URLs on the way in;
+  // the rewritten text is what's compared, so an asset swap re-installs.
   let appliedThemeCss=null;
   const applyTheme=()=>{
-    const css=theme().css;
+    const css=rewriteCssUrls(theme().css, RESOLVE_SRC);
     if(css!==appliedThemeCss){ appliedThemeCss=css; applyThemeCss(document, css); }
   };
   const slidesOf=()=>state.deck.slides;
@@ -1264,7 +1603,7 @@ if(!IS_AUDIENCE){
   /* ---- textarea wiring ---- */
   const ta=$("src");
 
-  /* ---- bootstrap: try loading deckwright_intro.md, fall back to NEW_DECK ---- */
+  /* ---- bootstrap: persisted document > deckwright_intro.md > NEW_DECK ---- */
   const initWithSource=(src)=>{
     state.source = src;
     ta.value = state.source;
@@ -1272,9 +1611,37 @@ if(!IS_AUDIENCE){
     ta.setSelectionRange(0, 0);
     renderEditor();
   };
-  // Start with a quick render so the UI isn't blank while fetching
+  /** Register every root-level .css asset carrying a @theme header; themes
+   *  are part of the document, so they travel through storage and .ddz.
+   *  Returns any problems as messages (never throws). */
+  const registerDocThemes = async ()=>{
+    const problems=[];
+    for(const [p, blob] of doc.assets){
+      if(p.includes("/") || !/\.css$/i.test(p)) continue;
+      try{
+        const t = registerTheme(await blob.text());
+        t.path = p;      // so deleting the asset can unregister the theme
+      }catch(err){ problems.push(p+": "+err.message); }
+    }
+    return problems;
+  };
+  // Start with a quick render so the UI isn't blank while restoring
   initWithSource(state.source);
   (async ()=>{
+    try{
+      const saved = await idbGet("current");
+      if(saved && typeof saved.source === "string"){
+        doc.assets.clear();
+        for(const [p,b] of Object.entries(saved.assets || {})) doc.assets.set(p, b);
+        await registerDocThemes();
+        if(saved.themeId && THEMES[saved.themeId]) state.themeId = saved.themeId;
+        appliedThemeCss = null;
+        initWithSource(saved.source);
+        state.filename = saved.filename || null;
+        renderAssets();
+        return;
+      }
+    }catch(e){ /* storage unavailable — fall through */ }
     try {
       const res = await fetch("deckwright_intro.md");
       if(res.ok){
@@ -1292,6 +1659,7 @@ if(!IS_AUDIENCE){
       state.index=indexAtCaret();
       refresh();
     }, 120);
+    persistSoon();
   });
   ["keyup","click"].forEach(ev=> ta.addEventListener(ev, syncFromCaret));
   document.addEventListener("selectionchange", ()=>{ if(document.activeElement===ta) syncFromCaret(); });
@@ -1317,6 +1685,13 @@ if(!IS_AUDIENCE){
         index:state.index, themeCss:theme().css, dir:dir||1, animate:!!animate }, "*");
     }
   }
+  // Assets travel as Blobs (structured clone) so the audience window renders
+  // from its own copies — sent on the ready handshake and whenever they change.
+  const pushAssets=()=>{
+    if(!(audienceWin && !audienceWin.closed)) return;
+    const files={}; doc.assets.forEach((b,p)=> files[p]=b);
+    try{ audienceWin.postMessage({ dw:1, type:"assets", files }, "*"); }catch(e){}
+  }
   const setIndex=(i)=>{
     const prev = state.index;
     const next = Math.max(0, Math.min(i, slidesOf().length-1));
@@ -1335,7 +1710,7 @@ if(!IS_AUDIENCE){
   const refresh=()=>{ renderMain(false); pushState(); };
   window.addEventListener("message", e=>{
     const m=e.data; if(!m||m.dw!==1) return;
-    if(m.type==="ready"){ pushState(); updateAudienceUI(); }
+    if(m.type==="ready"){ pushAssets(); pushState(); updateAudienceUI(); }
     else if(m.type==="nav"){
       // Audience-initiated nav: it has already rendered itself, so update our
       // state without echoing a sync back (the echo would cut its animation short).
@@ -1408,11 +1783,24 @@ if(!IS_AUDIENCE){
   }
 
   /* ---- wiring ---- */
-  const download=(name,text,mime)=>{
-    const b=new Blob([text],{type:mime}), u=URL.createObjectURL(b), a=document.createElement("a");
+  const downloadBlob=(name,blob)=>{
+    const u=URL.createObjectURL(blob), a=document.createElement("a");
     a.href=u; a.download=name; document.body.appendChild(a); a.click(); a.remove();
     setTimeout(()=>URL.revokeObjectURL(u),1000);
   };
+  const download=(name,text,mime)=> downloadBlob(name, new Blob([text],{type:mime}));
+
+  /* ---- the document as a .ddz: manuscript + every asset, zipped ---- */
+  const mdName=()=> state.filename && /\.(md|markdown)$/i.test(state.filename)
+    ? state.filename
+    : (state.deck.meta.title||"deck").replace(/[^\w.-]+/g,"_") + ".md";
+  $("exportDdzBtn").addEventListener("click", async ()=>{
+    const entries=[{ name: mdName(), data: new TextEncoder().encode(state.source) }];
+    for(const [p,blob] of doc.assets)
+      entries.push({ name:p, data:new Uint8Array(await blob.arrayBuffer()) });
+    const base = mdName().replace(/\.(md|markdown)$/i,"");
+    downloadBlob(base + ".ddz", new Blob([zipWrite(entries)], {type:"application/zip"}));
+  });
   $("exportBtn").addEventListener("click", ()=>{
     const safe = state.filename || (state.deck.meta.title||"deck").replace(/[^\w.-]+/g,"_") + ".md";
     download(safe, state.source, "text/markdown");
@@ -1445,7 +1833,11 @@ if(!IS_AUDIENCE){
       const fm = styleText.match(new RegExp(v.replace(/-/g,"\\-") + "\\s*:\\s*([^;]+);"));
       return fm ? v + ":" + fm[1].trim() + ";" : "";
     }).join(" ");
-    const slidesHtml = slidesOf().map(s => renderSlide(s, REF_W).outerHTML).join("\n");
+    // Render with asset resolution bypassed: the export keeps relative
+    // references verbatim, expecting to live in the document directory
+    // (blob: URLs would be dead the moment the file is opened elsewhere).
+    const slidesHtml = withRawSrc(()=>
+      slidesOf().map(s => renderSlide(s, REF_W).outerHTML).join("\n"));
     const escd = s => String(s).replace(/&/g,"&amp;").replace(/</g,"&lt;");
     const page = `<!DOCTYPE html>
 <html lang="en">
@@ -1482,30 +1874,74 @@ ${slidesHtml}
       .replace(/\.md$/i,"").replace(/[^\w.-]+/g,"_");
     download(base + ".html", page, "text/html");
   });
-  $("importInput").addEventListener("change", e=>{
-    const f=e.target.files && e.target.files[0]; if(!f) return;
+  /* Loading OPENS a document. A bare .md is the one-file document; a .ddz is
+     the full tree. Either way the current assets are replaced — that is what
+     "open" means — so discarding a non-empty asset set asks first. */
+  const replaceAssets=(next)=>{               // next: Map<path, Blob>
+    // unregister the old document's themes; the new document's own .css
+    // files get (re)registered from its assets afterwards
+    for(const id of Object.keys(THEMES)){
+      if(THEMES[id].path) delete THEMES[id];
+    }
+    for(const p of assetUrls.keys()) dropAssetUrl(p);
+    doc.assets.clear();
+    for(const [p,b] of next) doc.assets.set(p,b);
+    if(!THEMES[state.themeId]) state.themeId = "midnight";
+    appliedThemeCss = null;                   // force re-install (urls changed)
+  };
+  const afterDocLoaded=(source, filename)=>{
+    state.source = source;
+    state.filename = filename;
+    ta.value = state.source;
+    reparse(); state.index = 0;
+    ta.setSelectionRange(0,0);
+    refresh(); renderAssets(); pushAssets(); persistSoon();
+  };
+  const openMd=(f)=>{
     const r=new FileReader();
     r.onload=()=>{
-      state.source=String(r.result);
-      state.filename = f.name;
-      ta.value=state.source;
-      reparse(); state.index=0;
-      ta.setSelectionRange(0,0);
-      refresh();
+      replaceAssets(new Map());
+      afterDocLoaded(String(r.result), f.name);
     };
-    r.readAsText(f); e.target.value="";
+    r.readAsText(f);
+  };
+  const openDdz=async (f)=>{
+    let files;
+    try{ files = await zipRead(await f.arrayBuffer()); }
+    catch(err){ alert("Could not read "+f.name+": "+err.message); return; }
+    const roots = [...files.keys()].filter(p => !p.includes("/") && /\.md$/i.test(p));
+    if(roots.length !== 1){
+      alert("A .ddz must contain exactly one .md at its root — this one has "
+        + (roots.length ? roots.length+" ("+roots.join(", ")+")" : "none") + ".");
+      return;
+    }
+    const mdPath = roots[0];
+    const source = new TextDecoder("utf-8").decode(files.get(mdPath));
+    const next = new Map();
+    for(const [p,bytes] of files){
+      if(p === mdPath) continue;
+      next.set(p, new Blob([bytes], {type:mimeOf(p)}));
+    }
+    replaceAssets(next);
+    const problems = await registerDocThemes();
+    if(problems.length) alert("Some theme files were skipped:\n"+problems.join("\n"));
+    afterDocLoaded(source, mdPath);
+  };
+  $("importInput").addEventListener("change", e=>{
+    const f=e.target.files && e.target.files[0]; if(!f) return;
+    e.target.value="";
+    if(doc.assets.size &&
+       !confirm(`Open ${f.name}? The current document (and its ${doc.assets.size} asset file${doc.assets.size>1?"s":""}) will be replaced.`)) return;
+    if(/\.ddz$/i.test(f.name)) openDdz(f); else openMd(f);
   });
 
   $("newBtn").addEventListener("click", ()=>{
-    if(state.source !== NEW_DECK){
-      if(!confirm("Start a new deck? Unsaved changes will be lost.")) return;
+    if(state.source !== NEW_DECK || doc.assets.size){
+      const extra = doc.assets.size ? " (including this document's assets)" : "";
+      if(!confirm("Start a new deck? Unsaved changes"+extra+" will be lost.")) return;
     }
-    state.source = NEW_DECK;
-    state.filename = "new_deck.md";
-    ta.value = state.source;
-    reparse(); state.index = 0;
-    ta.setSelectionRange(0, 0);
-    refresh();
+    replaceAssets(new Map());
+    afterDocLoaded(NEW_DECK, "new_deck.md");
   });
   $("viewBtn").addEventListener("click", ()=>setView("presenter"));
   $("viewBtn2").addEventListener("click", ()=>setView("edit"));
@@ -1519,11 +1955,13 @@ ${slidesHtml}
   $("themeBtn").addEventListener("click", ()=>{
     const ids=Object.keys(THEMES);
     state.themeId=ids[(ids.indexOf(state.themeId)+1)%ids.length];
-    refresh();
+    refresh(); persistSoon();
   });
-  /* Loaded themes are session-only: same format as the built-ins, registered
-     into the same registry — the Theme button cycles them, decks reference
-     them by id in front matter, and the audience gets the CSS via sync. */
+  /* Loaded themes become part of the DOCUMENT: the .css file joins the
+     assets at the root, so it persists, saves into the .ddz, and reloads
+     with the document. Same format as the built-ins, same registry — the
+     Theme button cycles them, decks reference them by id in front matter,
+     and the audience gets the CSS via sync. */
   $("themeLoadBtn").addEventListener("click", ()=> $("themeInput").click());
   $("themeInput").addEventListener("change", e=>{
     const f=e.target.files && e.target.files[0]; if(!f) return;
@@ -1531,8 +1969,13 @@ ${slidesHtml}
     r.onload=()=>{
       try{
         const t=registerTheme(String(r.result));
+        const path = f.name.includes("/") ? f.name.split("/").pop() : f.name;
+        t.path = path;
+        dropAssetUrl(path);
+        doc.assets.set(path, new Blob([String(r.result)], {type:"text/css"}));
         state.themeId=t.id;
-        refresh();
+        appliedThemeCss=null;
+        assetsChanged();
       }catch(err){ alert(err.message); }
     };
     r.readAsText(f); e.target.value="";
@@ -1541,6 +1984,127 @@ ${slidesHtml}
     const p=$("notesPanel"), hidden=p.style.display==="none";
     p.style.display=hidden?"block":"none";
     $("notesBtn").textContent=hidden?"Hide notes":"Show notes";
+  });
+
+  /* =========================================================================
+   * ASSETS PANEL — the document's files: list, add, delete, insert.
+   * Dropping files anywhere on the manuscript adds them; dropped images also
+   * get an image directive inserted at the caret, which is the common move.
+   * ======================================================================= */
+  const fmtSize = n => n<1024 ? n+" B"
+    : n<1048576 ? (n/1024).toFixed(1)+" KB" : (n/1048576).toFixed(1)+" MB";
+
+  const renderAssets=()=>{
+    $("assetsBtn").textContent = "Assets" + (doc.assets.size ? " ("+doc.assets.size+")" : "");
+    const list=$("assetsList"); list.innerHTML="";
+    if(!doc.assets.size){
+      const d=document.createElement("div");
+      d.className="a-empty";
+      d.textContent="No files yet — add some, or drop them on the manuscript.";
+      list.appendChild(d);
+      return;
+    }
+    [...doc.assets.keys()].sort().forEach(p=>{
+      const row=document.createElement("div"); row.className="a-row";
+      const isTheme = Object.values(THEMES).some(t=>t.path===p);
+      const name=document.createElement("span");
+      name.className="a-name"+(isTheme?" a-theme":"");
+      name.textContent=p; name.title=p + (isTheme?" — a theme of this document":"");
+      const size=document.createElement("span"); size.className="a-size";
+      size.textContent=fmtSize(doc.assets.get(p).size);
+      row.append(name, size);
+      if(isImagePath(p)){
+        const ins=document.createElement("button"); ins.className="a-act";
+        ins.textContent="↳"; ins.title="Insert an image directive at the caret";
+        ins.addEventListener("click", ()=>insertImageDirective(p));
+        row.appendChild(ins);
+      }
+      const del=document.createElement("button"); del.className="a-act";
+      del.textContent="×"; del.title="Remove from the document";
+      del.addEventListener("click", ()=>{
+        if(!confirm(`Remove ${p} from the document?`)) return;
+        deleteAsset(p);
+      });
+      row.appendChild(del);
+      list.appendChild(row);
+    });
+  };
+
+  // one funnel for every asset mutation: re-render (references may resolve
+  // differently now), re-theme, sync the audience, persist
+  const assetsChanged=()=>{
+    refresh(); renderAssets(); pushAssets(); persistSoon();
+  };
+
+  const addAssetFiles=(fileList)=>{
+    const files=[...fileList]; if(!files.length) return;
+    (async ()=>{
+      for(const f of files){
+        const p = f.name;                       // added files land at the root
+        dropAssetUrl(p);
+        doc.assets.set(p, f);
+        // a root .css with a @theme header is a document theme
+        if(/\.css$/i.test(p)){
+          try{
+            const t=registerTheme(await f.text());
+            t.path=p; appliedThemeCss=null;
+          }catch(e){ /* plain css asset, fine */ }
+        }
+      }
+      assetsChanged();
+    })();
+  };
+
+  const deleteAsset=(p)=>{
+    dropAssetUrl(p);
+    doc.assets.delete(p);
+    for(const id of Object.keys(THEMES)){       // was it a document theme?
+      if(THEMES[id].path===p) delete THEMES[id];
+    }
+    if(!THEMES[state.themeId]){ state.themeId="midnight"; appliedThemeCss=null; }
+    assetsChanged();
+  };
+
+  const insertImageDirective=(p)=>{
+    const ref = /[\s"]/.test(p) ? '"'+p+'"' : p;
+    const ins = `<!-- image: ${ref} -->\n`;
+    const pos = ta.selectionStart ?? state.source.length;
+    // sit on its own line: pad to a line start if the caret isn't at one
+    const atLineStart = pos===0 || state.source[pos-1]==="\n";
+    const text = (atLineStart?"":"\n") + ins;
+    state.source = state.source.slice(0,pos) + text + state.source.slice(pos);
+    ta.value = state.source;
+    const np = pos + text.length;
+    ta.focus(); ta.setSelectionRange(np,np);
+    reparse(); state.index=indexAtCaret();
+    refresh(); highlightSrc(); persistSoon();
+  };
+
+  $("assetsBtn").addEventListener("click", ()=>{
+    const p=$("assetsPanel"), hidden=p.style.display==="none";
+    p.style.display=hidden?"flex":"none";
+    $("assetsBtn").classList.toggle("open", hidden);
+    if(hidden) renderAssets();
+  });
+  $("assetAddBtn").addEventListener("click", ()=> $("assetInput").click());
+  $("assetInput").addEventListener("change", e=>{
+    addAssetFiles(e.target.files); e.target.value="";
+  });
+
+  // drag-drop on the manuscript: add the files; images also insert in place
+  ["dragenter","dragover"].forEach(ev=> ta.addEventListener(ev, e=>{
+    if(e.dataTransfer && [...e.dataTransfer.types].includes("Files")){
+      e.preventDefault(); ta.classList.add("droptarget");
+    }
+  }));
+  ["dragleave","dragend"].forEach(ev=> ta.addEventListener(ev, ()=>
+    ta.classList.remove("droptarget")));
+  ta.addEventListener("drop", e=>{
+    if(!(e.dataTransfer && e.dataTransfer.files.length)) return;
+    e.preventDefault(); ta.classList.remove("droptarget");
+    const files=[...e.dataTransfer.files];
+    addAssetFiles(files);
+    files.filter(f=>isImagePath(f.name)).forEach(f=>insertImageDirective(f.name));
   });
 
   window.addEventListener("keydown", e=>{
