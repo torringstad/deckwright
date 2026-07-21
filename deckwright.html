@@ -88,14 +88,14 @@
   .src.droptarget{ background:rgba(210,162,76,.07); }
 
   /* ---- document assets panel (bottom of the edit pane) ---- */
-  .assets-toggle{ flex:0 0 auto; background:transparent; color:var(--muted);
-    border:1px solid var(--line); border-radius:6px; padding:3px 9px;
-    font-family:var(--mono); font-size:10.5px; letter-spacing:1px; }
-  .assets-toggle:hover{ color:var(--text); background:var(--line-soft); }
-  .assets-toggle.open{ color:var(--brass); border-color:var(--brass-dim); }
+  .assets-status{ flex:0 0 auto; font-family:var(--mono); font-size:10.5px;
+    letter-spacing:1px; color:var(--muted); }
   .assets{ flex:0 0 auto; height:34%; min-height:80px; max-height:70%;
     display:flex; flex-direction:column;
     border-top:1px solid var(--line-soft); background:var(--rail); }
+  /* collapsed: only the resize divider remains, so a double-click restores it */
+  .assets.collapsed{ min-height:0; height:auto; }
+  .assets.collapsed > .a-head, .assets.collapsed > .a-list{ display:none; }
   .assets .a-resize{ flex:0 0 6px; cursor:row-resize; position:relative;
     display:flex; align-items:center; justify-content:center; }
   .assets .a-resize::after{ content:""; height:1px; width:100%; background:var(--line); }
@@ -389,8 +389,8 @@
         <div class="head">
           <span class="label">MANUSCRIPT</span>
           <span class="where" id="caretWhere"></span>
-          <button class="assets-toggle open" id="assetsBtn"
-            title="Files bundled with this document — drop files on the manuscript to add them">Assets</button>
+          <span class="assets-status" id="assetsStatus"
+            title="Files bundled with this document — double-click the divider below to collapse or expand">Assets</span>
         </div>
         <textarea class="src" id="src" spellcheck="false"
           autocomplete="off" autocapitalize="off"></textarea>
@@ -2017,7 +2017,7 @@ ${slidesHtml}
   // CSS min-height/max-height already bound it — then pinning that in px.
   const autosizeAssets=()=>{
     const panel=$("assetsPanel");
-    if(!panel || panel.style.display==="none") return;
+    if(!panel || panel.classList.contains("collapsed")) return;
     const editpane=document.querySelector(".editpane");
     panel.style.height="auto";
     const natural=Math.ceil(panel.getBoundingClientRect().height);
@@ -2029,13 +2029,13 @@ ${slidesHtml}
   const firstOpenAutosize=()=>{
     if(assetsAutoSized) return;
     const panel=$("assetsPanel");
-    if(!panel || panel.style.display==="none") return;
+    if(!panel || panel.classList.contains("collapsed")) return;
     assetsAutoSized=true;
     autosizeAssets();
   };
 
   const renderAssets=()=>{
-    $("assetsBtn").textContent = "Assets" + (doc.assets.size ? " ("+doc.assets.size+")" : "");
+    $("assetsStatus").textContent = "Assets" + (doc.assets.size ? " ("+doc.assets.size+")" : "");
     const list=$("assetsList"); list.innerHTML="";
     if(!doc.assets.size){
       const d=document.createElement("div");
@@ -2122,20 +2122,16 @@ ${slidesHtml}
     refresh(); highlightSrc(); persistSoon();
   };
 
-  $("assetsBtn").addEventListener("click", ()=>{
-    const p=$("assetsPanel"), hidden=p.style.display==="none";
-    p.style.display=hidden?"flex":"none";
-    $("assetsBtn").classList.toggle("open", hidden);
-    if(hidden) renderAssets();
-  });
-  // drag the handle at the top of the panel to change its height
+  // drag the handle at the top of the panel to change its height; double-click
+  // it to collapse / restore (matching the main column dividers)
   (()=>{
     const panel=$("assetsPanel"), handle=$("assetsResize");
     if(!panel || !handle) return;
     const editpane=document.querySelector(".editpane");
-    let startY=null, startH=0;
+    let startY=null, startH=0, savedAssetsH="";
     const maxH=()=> Math.max(80, editpane.getBoundingClientRect().height - 160);
     const onDown=(y)=>{
+      if(panel.classList.contains("collapsed")) return;  // double-click to restore
       startY=y; startH=panel.getBoundingClientRect().height;
       handle.classList.add("dragging");
       document.body.classList.add("row-resizing");
@@ -2163,6 +2159,17 @@ ${slidesHtml}
       handle.addEventListener("touchmove",tm,{passive:false});
       handle.addEventListener("touchend",tu);
     },{passive:false});
+    // double-click to collapse / restore, remembering the expanded height
+    handle.addEventListener("dblclick", ()=>{
+      if(panel.classList.contains("collapsed")){
+        panel.classList.remove("collapsed");
+        if(savedAssetsH) panel.style.height=savedAssetsH;
+      } else {
+        savedAssetsH = panel.style.height || getComputedStyle(panel).height;
+        panel.classList.add("collapsed");
+        panel.style.height="";   // let the collapsed rule drive the height
+      }
+    });
   })();
 
   // Assets enter through the single Load control or by dropping on the

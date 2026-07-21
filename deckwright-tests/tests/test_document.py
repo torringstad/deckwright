@@ -130,7 +130,7 @@ def test_ddz_open_manuscript_theme_and_assets(dw):
     expect(dw.page.locator("#deckTitle")).to_have_text("Zipped deck")
     # the document's own theme registered and selected via front matter
     expect(dw.page.locator("#themeBtn")).to_have_text("Theme: Sunrise")
-    expect(dw.page.locator("#assetsBtn")).to_have_text("Assets (2)")
+    expect(dw.page.locator("#assetsStatus")).to_have_text("Assets (2)")
     # the reference resolved to a live blob of the zipped bytes
     img = dw.md.locator(".fig-cover img")
     assert img.get_attribute("src").startswith("blob:")
@@ -149,7 +149,7 @@ def test_ddz_rejects_wrong_root_md_count(dw, mds):
     assert msgs and "exactly one .md" in msgs[0]
     # the current document was left untouched
     expect(dw.page.locator("#deckTitle")).to_have_text("Before")
-    expect(dw.page.locator("#assetsBtn")).to_have_text("Assets")
+    expect(dw.page.locator("#assetsStatus")).to_have_text("Assets")
 
 
 def test_ddz_save_roundtrip_lossless_and_junk_filtered(dw):
@@ -175,7 +175,7 @@ def test_ddz_save_roundtrip_lossless_and_junk_filtered(dw):
 def test_opening_bare_md_replaces_document(dw):
     open_ddz(dw, {"deck.md": DDZ_MD.encode(), "sun.css": DDZ_CSS.encode(),
                   "img/doc-hero.png": solid_png(MAGENTA)})
-    expect(dw.page.locator("#assetsBtn")).to_have_text("Assets (2)")
+    expect(dw.page.locator("#assetsStatus")).to_have_text("Assets (2)")
     msgs = []
     dw.page.once("dialog", lambda d: (msgs.append(d.message), d.accept()))
     upload(dw, "importInput", "plain.md", b"---\ntitle: Plain\n---\n# p",
@@ -183,7 +183,7 @@ def test_opening_bare_md_replaces_document(dw):
     expect(dw.page.locator("#deckTitle")).to_have_text("Plain")
     assert msgs and "replaced" in msgs[0]
     # assets gone, the document theme unregistered, fallback theme active
-    expect(dw.page.locator("#assetsBtn")).to_have_text("Assets")
+    expect(dw.page.locator("#assetsStatus")).to_have_text("Assets")
     expect(dw.page.locator("#themeBtn")).to_have_text("Theme: Midnight")
 
 
@@ -193,7 +193,7 @@ def test_drop_md_loads_document_not_asset(dw):
     so a dropped .md/.ddz opens rather than joining the current document."""
     open_ddz(dw, {"deck.md": DDZ_MD.encode(),
                   "img/doc-hero.png": solid_png(MAGENTA)})
-    expect(dw.page.locator("#assetsBtn")).to_have_text("Assets (1)")
+    expect(dw.page.locator("#assetsStatus")).to_have_text("Assets (1)")
     msgs = []
     dw.page.once("dialog", lambda d: (msgs.append(d.message), d.accept()))
     dw.page.evaluate(
@@ -205,7 +205,7 @@ def test_drop_md_loads_document_not_asset(dw):
         }""", ["dropped.md", "---\ntitle: Dropped\n---\n# d"])
     expect(dw.page.locator("#deckTitle")).to_have_text("Dropped")
     assert msgs and "replaced" in msgs[0]
-    expect(dw.page.locator("#assetsBtn")).to_have_text("Assets")  # not (2)
+    expect(dw.page.locator("#assetsStatus")).to_have_text("Assets")  # not (2)
 
 
 def test_single_load_input_adds_asset_and_loads_document(dw):
@@ -214,7 +214,7 @@ def test_single_load_input_adds_asset_and_loads_document(dw):
     picker any more — everything comes through Load."""
     dw.set_source("---\ntitle: Keep\n---\n# keep")
     add_asset(dw, "doc-red.png", solid_png(MAGENTA))          # non-doc -> add
-    expect(dw.page.locator("#assetsBtn")).to_have_text("Assets (1)")
+    expect(dw.page.locator("#assetsStatus")).to_have_text("Assets (1)")
     expect(dw.page.locator("#deckTitle")).to_have_text("Keep")   # not replaced
     msgs = []
     dw.page.once("dialog", lambda d: (msgs.append(d.message), d.accept()))
@@ -222,7 +222,7 @@ def test_single_load_input_adds_asset_and_loads_document(dw):
            b"---\ntitle: Next\n---\n# n", "text/markdown")        # doc -> load
     expect(dw.page.locator("#deckTitle")).to_have_text("Next")
     assert msgs and "replaced" in msgs[0]
-    expect(dw.page.locator("#assetsBtn")).to_have_text("Assets")  # add gone
+    expect(dw.page.locator("#assetsStatus")).to_have_text("Assets")  # add gone
 
 
 # ------------------------------------------------------------- asset panel --
@@ -230,7 +230,7 @@ def test_single_load_input_adds_asset_and_loads_document(dw):
 def test_asset_panel_add_insert_delete(dw):
     dw.set_source("# start")
     add_asset(dw, "doc-red.png", solid_png(MAGENTA))
-    expect(dw.page.locator("#assetsBtn")).to_have_text("Assets (1)")
+    expect(dw.page.locator("#assetsStatus")).to_have_text("Assets (1)")
     # the assets pane is open by default — no need to toggle it open
     row = dw.page.locator("#assetsList .a-row")
     expect(row).to_have_count(1)
@@ -245,7 +245,7 @@ def test_asset_panel_add_insert_delete(dw):
     dw.page.once("dialog", lambda d: d.accept())
     row.hover()
     row.locator('.a-act[title^="Remove"]').click()
-    expect(dw.page.locator("#assetsBtn")).to_have_text("Assets")
+    expect(dw.page.locator("#assetsStatus")).to_have_text("Assets")
     expect(dw.page.locator("#assetsList .a-empty")).to_be_visible()
     dw.page.wait_for_function(
         "() => document.querySelector('#canvas .fig img')"
@@ -272,21 +272,29 @@ def test_drop_on_manuscript_adds_and_inserts(dw):
             ta.dispatchEvent(new DragEvent('drop',
               {bubbles: true, cancelable: true, dataTransfer: dt}));
         }""", ["doc-drop.png", list(solid_png(MAGENTA))])
-    expect(dw.page.locator("#assetsBtn")).to_have_text("Assets (1)")
+    expect(dw.page.locator("#assetsStatus")).to_have_text("Assets (1)")
     expect(dw.page.locator("#src")).to_have_value(
         re.compile(r"<!-- image: doc-drop\.png -->"))
     assert dw.md.locator(".fig img").get_attribute("src").startswith("blob:")
 
 
-def test_assets_pane_open_by_default_and_toggles(dw):
-    """The assets pane is shown on load (no click needed) and the toggle still
-    closes and reopens it."""
+def test_assets_pane_open_by_default_status_and_divider_collapse(dw):
+    """The pane is shown on load. The count is a plain status label (no longer
+    a button), and double-clicking the resize divider collapses / restores the
+    pane — the divider stays visible while collapsed so it can restore."""
     expect(dw.page.locator("#assetsPanel")).to_be_visible()
-    expect(dw.page.locator("#assetsBtn")).to_have_class(re.compile(r"\bopen\b"))
-    dw.page.locator("#assetsBtn").click()
-    expect(dw.page.locator("#assetsPanel")).to_be_hidden()
-    dw.page.locator("#assetsBtn").click()
-    expect(dw.page.locator("#assetsPanel")).to_be_visible()
+    expect(dw.page.locator("#assetsList")).to_be_visible()
+    # the count is a status label, not a button
+    assert dw.page.locator("#assetsStatus").evaluate("el => el.tagName") == "SPAN"
+
+    # double-click the divider: content hides, the divider itself stays
+    dw.page.locator("#assetsResize").dblclick()
+    expect(dw.page.locator("#assetsList")).to_be_hidden()
+    expect(dw.page.locator("#assetsResize")).to_be_visible()
+    expect(dw.page.locator("#assetsStatus")).to_be_visible()  # status persists
+    # double-click again restores it
+    dw.page.locator("#assetsResize").dblclick()
+    expect(dw.page.locator("#assetsList")).to_be_visible()
 
 
 def test_assets_pane_fits_loaded_document_content(dw):
@@ -300,7 +308,7 @@ def test_assets_pane_fits_loaded_document_content(dw):
         "three.png": solid_png(MAGENTA),
         "four.png": solid_png(TEAL),
     })
-    expect(dw.page.locator("#assetsBtn")).to_have_text("Assets (4)")
+    expect(dw.page.locator("#assetsStatus")).to_have_text("Assets (4)")
     # an explicit px height was pinned by the fit-to-content pass
     h = dw.page.locator("#assetsPanel").evaluate("el => el.style.height")
     assert h.endswith("px") and float(h[:-2]) >= 80
@@ -323,7 +331,7 @@ def test_added_css_registers_theme_without_activating_then_resolves(dw):
                '.slide{ background: url(doc-bg.png); background-size: cover; }'
                ).encode(), "text/css")
     # registered and joined the document, but the active theme is untouched
-    expect(dw.page.locator("#assetsBtn")).to_have_text("Assets (2)")
+    expect(dw.page.locator("#assetsStatus")).to_have_text("Assets (2)")
     expect(dw.page.locator("#themeBtn")).to_have_text("Theme: Midnight")
 
     # selecting it via front matter activates it; the url() then paints the
@@ -351,7 +359,7 @@ def test_autosave_and_restore_across_reload(dw):
     expect(dw.page.locator("#src")).to_have_value(
         re.compile("survives reload"))
     expect(dw.page.locator("#deckTitle")).to_have_text("Persisted")
-    expect(dw.page.locator("#assetsBtn")).to_have_text("Assets (1)")
+    expect(dw.page.locator("#assetsStatus")).to_have_text("Assets (1)")
 
 
 # ----------------------------------------------------------- audience sync --
