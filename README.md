@@ -33,5 +33,5 @@ The live demo will automatically open the intro-document
 with similar design philosophy and a rich feature set.
 
 Compared to **Deckless**, **Deckwright** is open source, server-less,
-registration less, locally installable and compact.
+registration-less, locally installable and compact.
 

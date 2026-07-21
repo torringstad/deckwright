@@ -59,7 +59,8 @@ def open_ddz(dw, files: dict, name="deck.ddz"):
 
 
 def add_asset(dw, name, data, mime="image/png"):
-    upload(dw, "assetInput", name, data, mime)
+    # assets now enter through the single unified Load input, same as documents
+    upload(dw, "importInput", name, data, mime)
 
 
 IDB_READ = """() => new Promise(res => {
@@ -186,6 +187,44 @@ def test_opening_bare_md_replaces_document(dw):
     expect(dw.page.locator("#themeBtn")).to_have_text("Theme: Midnight")
 
 
+def test_drop_md_loads_document_not_asset(dw):
+    """A document file dropped on the manuscript LOADS (replaces) — it is not
+    stored as an asset. The unified ingest router routes by type everywhere,
+    so a dropped .md/.ddz opens rather than joining the current document."""
+    open_ddz(dw, {"deck.md": DDZ_MD.encode(),
+                  "img/doc-hero.png": solid_png(MAGENTA)})
+    expect(dw.page.locator("#assetsBtn")).to_have_text("Assets (1)")
+    msgs = []
+    dw.page.once("dialog", lambda d: (msgs.append(d.message), d.accept()))
+    dw.page.evaluate(
+        """([name, text]) => {
+            const f = new File([text], name, {type: 'text/markdown'});
+            const dt = new DataTransfer(); dt.items.add(f);
+            document.getElementById('src').dispatchEvent(new DragEvent('drop',
+              {bubbles: true, cancelable: true, dataTransfer: dt}));
+        }""", ["dropped.md", "---\ntitle: Dropped\n---\n# d"])
+    expect(dw.page.locator("#deckTitle")).to_have_text("Dropped")
+    assert msgs and "replaced" in msgs[0]
+    expect(dw.page.locator("#assetsBtn")).to_have_text("Assets")  # not (2)
+
+
+def test_single_load_input_adds_asset_and_loads_document(dw):
+    """One input, two verbs chosen by type: a non-document is ADDED to the
+    current document; a document REPLACES it. There is no separate asset
+    picker any more — everything comes through Load."""
+    dw.set_source("---\ntitle: Keep\n---\n# keep")
+    add_asset(dw, "doc-red.png", solid_png(MAGENTA))          # non-doc -> add
+    expect(dw.page.locator("#assetsBtn")).to_have_text("Assets (1)")
+    expect(dw.page.locator("#deckTitle")).to_have_text("Keep")   # not replaced
+    msgs = []
+    dw.page.once("dialog", lambda d: (msgs.append(d.message), d.accept()))
+    upload(dw, "importInput", "next.md",
+           b"---\ntitle: Next\n---\n# n", "text/markdown")        # doc -> load
+    expect(dw.page.locator("#deckTitle")).to_have_text("Next")
+    assert msgs and "replaced" in msgs[0]
+    expect(dw.page.locator("#assetsBtn")).to_have_text("Assets")  # add gone
+
+
 # ------------------------------------------------------------- asset panel --
 
 def test_asset_panel_add_insert_delete(dw):
@@ -242,18 +281,28 @@ def test_drop_on_manuscript_adds_and_inserts(dw):
 
 # --------------------------------------------------------- document themes --
 
-def test_load_theme_joins_document_and_urls_resolve(dw):
+def test_added_css_registers_theme_without_activating_then_resolves(dw):
+    """A .css now arrives through the ADD path (the Load input / drop) like any
+    asset: a root .css with an @theme header registers as a document theme but
+    does NOT become active — activation is a separate, deliberate act. Once
+    selected, its document-relative url()s resolve against the assets."""
     dw.set_source("# themed")
     add_asset(dw, "doc-bg.png", solid_png(TEAL))
-    upload(dw, "themeInput", "night.css",
-           ('/* @theme night "Doc Night" */\n'
-            '.slide{ background: url(doc-bg.png); background-size: cover; }'
-            ).encode(), "text/css")
-    expect(dw.page.locator("#themeBtn")).to_have_text("Theme: Doc Night")
+    add_asset(dw, "night.css",
+              ('/* @theme night "Doc Night" */\n'
+               '.slide{ background: url(doc-bg.png); background-size: cover; }'
+               ).encode(), "text/css")
+    # registered and joined the document, but the active theme is untouched
     expect(dw.page.locator("#assetsBtn")).to_have_text("Assets (2)")
-    # the theme's document-relative url() painted the asset's pixels
+    expect(dw.page.locator("#themeBtn")).to_have_text("Theme: Midnight")
+
+    # selecting it via front matter activates it; the url() then paints the
+    # asset's pixels, proving document-relative resolution in theme CSS
+    dw.set_source("---\ntheme: night\n---\n# themed")
+    expect(dw.page.locator("#themeBtn")).to_have_text("Theme: Doc Night")
     assert approx_rgb(dw.canvas_pixel(0.05, 0.9), TEAL)
-    # and both files are part of the saved document
+
+    # both files are part of the saved document
     with dw.page.expect_download() as dl:
         dw.page.locator("#exportDdzBtn").click()
     with zipfile.ZipFile(dl.value.path()) as z:
