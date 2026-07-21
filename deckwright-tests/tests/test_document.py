@@ -231,7 +231,7 @@ def test_asset_panel_add_insert_delete(dw):
     dw.set_source("# start")
     add_asset(dw, "doc-red.png", solid_png(MAGENTA))
     expect(dw.page.locator("#assetsBtn")).to_have_text("Assets (1)")
-    dw.page.locator("#assetsBtn").click()
+    # the assets pane is open by default — no need to toggle it open
     row = dw.page.locator("#assetsList .a-row")
     expect(row).to_have_count(1)
     expect(row.locator(".a-name")).to_have_text("doc-red.png")
@@ -255,7 +255,6 @@ def test_asset_panel_add_insert_delete(dw):
 def test_asset_name_with_space_quotes_and_resolves(dw):
     dw.set_source("# s")
     add_asset(dw, "my pic.png", solid_png(TEAL))
-    dw.page.locator("#assetsBtn").click()
     row = dw.page.locator("#assetsList .a-row")
     row.hover()
     row.locator('.a-act[title^="Insert"]').click()
@@ -277,6 +276,37 @@ def test_drop_on_manuscript_adds_and_inserts(dw):
     expect(dw.page.locator("#src")).to_have_value(
         re.compile(r"<!-- image: doc-drop\.png -->"))
     assert dw.md.locator(".fig img").get_attribute("src").startswith("blob:")
+
+
+def test_assets_pane_open_by_default_and_toggles(dw):
+    """The assets pane is shown on load (no click needed) and the toggle still
+    closes and reopens it."""
+    expect(dw.page.locator("#assetsPanel")).to_be_visible()
+    expect(dw.page.locator("#assetsBtn")).to_have_class(re.compile(r"\bopen\b"))
+    dw.page.locator("#assetsBtn").click()
+    expect(dw.page.locator("#assetsPanel")).to_be_hidden()
+    dw.page.locator("#assetsBtn").click()
+    expect(dw.page.locator("#assetsPanel")).to_be_visible()
+
+
+def test_assets_pane_fits_loaded_document_content(dw):
+    """Opening a document fits the (default-open) pane to that document's
+    assets: the first show pins an explicit, content-derived px height — not
+    the CSS default — clamped so the rows fit without the list scrolling."""
+    open_ddz(dw, {
+        "deck.md": b"---\ntitle: A\n---\n# a",
+        "one.png": solid_png(MAGENTA),
+        "two.png": solid_png(TEAL),
+        "three.png": solid_png(MAGENTA),
+        "four.png": solid_png(TEAL),
+    })
+    expect(dw.page.locator("#assetsBtn")).to_have_text("Assets (4)")
+    # an explicit px height was pinned by the fit-to-content pass
+    h = dw.page.locator("#assetsPanel").evaluate("el => el.style.height")
+    assert h.endswith("px") and float(h[:-2]) >= 80
+    # and the rows fit: the list isn't scrolling
+    assert dw.page.locator("#assetsList").evaluate(
+        "el => el.scrollHeight <= el.clientHeight + 2")
 
 
 # --------------------------------------------------------- document themes --

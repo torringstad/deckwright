@@ -389,12 +389,12 @@
         <div class="head">
           <span class="label">MANUSCRIPT</span>
           <span class="where" id="caretWhere"></span>
-          <button class="assets-toggle" id="assetsBtn"
+          <button class="assets-toggle open" id="assetsBtn"
             title="Files bundled with this document — drop files on the manuscript to add them">Assets</button>
         </div>
         <textarea class="src" id="src" spellcheck="false"
           autocomplete="off" autocapitalize="off"></textarea>
-        <div class="assets" id="assetsPanel" style="display:none">
+        <div class="assets" id="assetsPanel">
           <div class="a-resize" id="assetsResize"></div>
           <div class="a-head">
             <span class="label">DOCUMENT ASSETS</span>
@@ -1653,6 +1653,7 @@ if(!IS_AUDIENCE){
         if(text.trim()){ initWithSource(text); state.filename = "deckwright_intro.md"; }
       }
     } catch(e){ /* network error or file:// — keep the fallback */ }
+    renderAssets();   // pane is open by default — populate and size it on load
   })();
 
   ta.addEventListener("input", ()=>{
@@ -1899,6 +1900,7 @@ ${slidesHtml}
     ta.value = state.source;
     reparse(); state.index = 0;
     ta.setSelectionRange(0,0);
+    assetsAutoSized=false;                 // re-fit the open pane to this document
     refresh(); renderAssets(); pushAssets(); persistSoon();
   };
   const openMd=(f)=>{
@@ -2009,6 +2011,29 @@ ${slidesHtml}
   const fmtSize = n => n<1024 ? n+" B"
     : n<1048576 ? (n/1024).toFixed(1)+" KB" : (n/1048576).toFixed(1)+" MB";
 
+  let assetsAutoSized=false;
+  // Fit the assets pane to its content, clamped to the same bounds the drag
+  // handle honors. Measured by letting the panel take its natural height —
+  // CSS min-height/max-height already bound it — then pinning that in px.
+  const autosizeAssets=()=>{
+    const panel=$("assetsPanel");
+    if(!panel || panel.style.display==="none") return;
+    const editpane=document.querySelector(".editpane");
+    panel.style.height="auto";
+    const natural=Math.ceil(panel.getBoundingClientRect().height);
+    const maxH=Math.max(80, editpane.getBoundingClientRect().height - 160);
+    panel.style.height=Math.max(80, Math.min(natural, maxH))+"px";
+  };
+  // The pane is open by default; size it to content the first time it shows.
+  // Afterwards (and after any manual drag) its height is left untouched.
+  const firstOpenAutosize=()=>{
+    if(assetsAutoSized) return;
+    const panel=$("assetsPanel");
+    if(!panel || panel.style.display==="none") return;
+    assetsAutoSized=true;
+    autosizeAssets();
+  };
+
   const renderAssets=()=>{
     $("assetsBtn").textContent = "Assets" + (doc.assets.size ? " ("+doc.assets.size+")" : "");
     const list=$("assetsList"); list.innerHTML="";
@@ -2017,6 +2042,7 @@ ${slidesHtml}
       d.className="a-empty";
       d.textContent="No files yet — add them with Load, or drop them on the manuscript.";
       list.appendChild(d);
+      firstOpenAutosize();
       return;
     }
     [...doc.assets.keys()].sort().forEach(p=>{
@@ -2043,6 +2069,7 @@ ${slidesHtml}
       row.appendChild(del);
       list.appendChild(row);
     });
+    firstOpenAutosize();
   };
 
   // one funnel for every asset mutation: re-render (references may resolve
