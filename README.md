@@ -27,6 +27,17 @@ The live demo will automatically open the intro-document
 [gallery](deckwright_intro_gallery),
 [html](deckwright_intro.html)).
 
+## Development status
+
+The project have plenty rough edges, but should definitely be usable.
+
+To a certain degree, flexibility has been prioritised over absolute
+robustness. An effort has been made to make it hard to break things by
+accident, but you will definitely be able to break things if you try (in
+particular with creative CSS in themes).
+
+Did I mention responsive design? No? Good!
+
 ## Alternatives
 
 [Deckless](https://deckless.app) is a professional and polished product
@@ -34,4 +45,8 @@ with similar design philosophy and a rich feature set.
 
 Compared to **Deckless**, **Deckwright** is open source, server-less,
 registration-less, locally installable and compact.
+
+## Creating presentations with AI assistance
+
+The file [deckwright-authoring-guide.md](deckwright-authoring-guide.md) 
 
