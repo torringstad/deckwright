@@ -17,7 +17,8 @@
      references resolve exactly as a web server serving the document
      directory would resolve them. The document maps three ways: a .ddz zip
      for transport (Load / Save .ddz), IndexedDB for persistence between
-     sessions, and — later — a served directory ("document server mode").
+     sessions, and a served directory ("document server mode": deckserver.py
+     serving the document root, the directory itself being the store).
      A bare .md remains the degenerate one-file document; plain load/save
      of the manuscript alone still works.
 
@@ -1427,6 +1428,7 @@ if(!IS_AUDIENCE){
   });
   let persistTimer=null;
   const persistNow = ()=>{
+    if(SRV.on){ srvFlushSoon(); return; }    // server mode: the directory is the store
     const assets={}; doc.assets.forEach((b,p)=> assets[p]=b);
     idbPut("current", { v:1, source:state.source, filename:state.filename,
       themeId:state.themeId, assets });
@@ -1629,9 +1631,273 @@ if(!IS_AUDIENCE){
     }
     return problems;
   };
+
+  /* =========================================================================
+   * DOCUMENT SERVER MODE — deckserver.py serving the document directory.
+   *
+   * Same document model, different store: at boot the served tree is pulled
+   * into memory, and afterwards the in-memory document keeps flushing back
+   * out — the directory replaces IndexedDB, nothing about editing changes.
+   * Flushes are diffs, not dumps: Blobs are immutable, so identity against
+   * the last-flushed snapshot (SRV.synced) says exactly which assets moved,
+   * and unchanged files on disk are never touched (their mtimes are the
+   * external-edit signal, and other tools may be watching the directory).
+   *
+   * Editing may also happen ON DISK, sequentially, not collaboratively: a
+   * manifest poll compares per-file mtimes against those our own writes
+   * produced; purely-external changes reload silently, and only a file
+   * changed on BOTH sides in one window asks the user which version wins.
+   *
+   * Detection is a probe of the manifest endpoint: 200 = server mode (the
+   * app then never touches IndexedDB), 401 = server there but the token is
+   * missing (say so, fall back), anything else = ordinary standalone life.
+   * ======================================================================= */
+  const SRV = {
+    on:false,
+    token:new URLSearchParams(location.search).get("token") || "",
+    name:null,               // manuscript filename on the server
+    label:"",                // directory name, for the badge
+    mtimes:new Map(),        // path -> mtime as last seen or produced by US
+    synced:{ source:null, name:null, assets:new Map() },   // last flushed
+    q:Promise.resolve(),     // one lane: flushes and polls never overlap
+    badge:null, offline:false, problemShown:false, manifest0:null,
+  };
+  const encPath = p => p.split("/").map(encodeURIComponent).join("/");
+  const srvApi = (p,opts={}) => fetch("/@deckwright/api/"+p, { ...opts,
+    cache:"no-store",
+    headers:{ ...(opts.headers||{}), "X-Deckwright-Token":SRV.token } });
+  const srvBadge=(txt,bad)=>{
+    if(!SRV.badge) return;
+    SRV.badge.textContent = txt;
+    SRV.badge.style.color = bad ? "#e08080" : "var(--muted)";
+  };
+  const srvIsDocTheme = p => !p.includes("/") && /\.css$/i.test(p);
+  // The manuscript name the server should have: state.filename when it is a
+  // plausible root-level .md (so "Save as" renames on the server too).
+  const srvMdName = () =>
+    (state.filename && /\.(md|markdown)$/i.test(state.filename)
+      && !state.filename.includes("/")) ? state.filename : SRV.name;
+
+  const srvProbe = async ()=>{
+    let r;
+    try{ r = await srvApi("manifest"); }catch(e){ return false; }
+    if(r.status===401){
+      alert("A Deckwright document server is running at this address, but "
+        + "this page has no valid access token.\n\nOpen the exact URL that "
+        + "deckserver printed at startup.\n\nFalling back to browser storage.");
+      return false;
+    }
+    if(!r.ok) return false;
+    try{ SRV.manifest0 = await r.json(); }catch(e){ return false; }
+    return SRV.manifest0 && SRV.manifest0.v===1;
+  };
+
+  const srvBoot = async ()=>{
+    SRV.on = true;
+    const m = SRV.manifest0; SRV.manifest0 = null;
+    SRV.name = m.manuscript || "deck.md";
+    SRV.label = m.root || "document";
+    doc.assets.clear();
+    let source = null;
+    for(const f of m.files){
+      SRV.mtimes.set(f.path, f.mtime);
+      const r = await srvApi("file/"+encPath(f.path));
+      if(!r.ok) continue;                       // vanished mid-boot: the poll will see
+      if(f.path === SRV.name) source = await r.text();
+      else doc.assets.set(f.path, await r.blob());
+    }
+    await registerDocThemes();
+    appliedThemeCss = null;
+    initWithSource(source===null ? NEW_DECK : source);   // empty dir: fresh deck
+    state.filename = SRV.name;
+    SRV.synced = { source, name:(source===null ? null : SRV.name),
+                   assets:new Map(doc.assets) };
+    renderAssets();
+    const el=document.createElement("span");
+    el.className="mono";
+    el.style.cssText="font-size:11px;color:var(--muted);white-space:nowrap;";
+    $("deckTitle").after(el);
+    SRV.badge = el;
+    srvBadge("· serving "+SRV.label);
+    if(m.problem){ SRV.problemShown=true; alert("deckserver: "+m.problem); }
+    if(source===null) persistSoon();            // materialize the fresh deck
+    setInterval(()=>{ SRV.q = SRV.q.then(srvPollNow); }, 2500);
+  };
+
+  /* ---- outbound: what differs from the last flush ---- */
+  const srvDiff = ()=>{
+    const puts=[], dels=[];
+    for(const [p,b] of doc.assets) if(SRV.synced.assets.get(p)!==b) puts.push(p);
+    for(const p of SRV.synced.assets.keys()) if(!doc.assets.has(p)) dels.push(p);
+    const src = state.source!==SRV.synced.source || srvMdName()!==SRV.synced.name;
+    return { puts, dels, src, any: puts.length>0 || dels.length>0 || src };
+  };
+
+  const CONFLICT = Symbol("conflict");
+  // Every write states which version it believes it is replacing; the
+  // server answers 412 if the disk moved on since. That closes the window
+  // between polls in which a flush could clobber a fresh external edit —
+  // on 412 we stop, and the next poll's reconciliation (prompt included)
+  // sorts it out.
+  const srvIfMtime = p =>
+    SRV.mtimes.has(p) ? String(SRV.mtimes.get(p)) : "new";
+  const srvWrite = async (p, blob)=>{
+    const r = await srvApi("file/"+encPath(p), { method:"PUT", body:blob,
+      headers:{ "X-Deckwright-If-Mtime": srvIfMtime(p) } });
+    if(r.status===412) throw CONFLICT;
+    if(!r.ok) throw new Error("PUT "+p+" -> "+r.status);
+    SRV.mtimes.set(p, (await r.json()).mtime);
+  };
+  const srvRemove = async (p)=>{
+    const r = await srvApi("file/"+encPath(p), { method:"DELETE",
+      headers:{ "X-Deckwright-If-Mtime": srvIfMtime(p) } });
+    if(r.status===412) throw CONFLICT;
+    if(!r.ok) throw new Error("DELETE "+p+" -> "+r.status);
+    SRV.mtimes.delete(p);
+  };
+
+  const srvFlushNow = async ()=>{
+    const d = srvDiff();
+    if(!d.any) return;
+    srvBadge("· saving…");
+    try{
+      for(const p of d.puts){
+        const b = doc.assets.get(p);
+        await srvWrite(p, b);
+        SRV.synced.assets.set(p, b);
+      }
+      for(const p of d.dels){
+        await srvRemove(p);
+        SRV.synced.assets.delete(p);
+      }
+      if(d.src){
+        const name = srvMdName(), src = state.source;
+        await srvWrite(name, new Blob([src], {type:"text/markdown"}));
+        if(SRV.synced.name && SRV.synced.name!==name)    // rename: new first,
+          await srvRemove(SRV.synced.name);              // then drop the old
+        SRV.name = name;
+        SRV.synced.name = name; SRV.synced.source = src;
+      }
+      SRV.offline = false;
+      srvBadge("· serving "+SRV.label);
+    }catch(err){
+      // synced is only advanced past successful writes, so the next flush
+      // (each poll retries) picks up exactly where this one failed
+      if(err===CONFLICT){ srvBadge("· changed on disk — reconciling…"); return; }
+      if(!SRV.offline){ SRV.offline=true; console.warn("deckserver:", err); }
+      srvBadge("· server unreachable — NOT saved", true);
+    }
+  };
+  const srvFlushSoon = ()=>{ SRV.q = SRV.q.then(srvFlushNow); };
+
+  /* ---- inbound: adopt external changes into the live document ---- */
+  const srvPull = async (changed, removed)=>{
+    let themes=false, src=false;
+    for(const p of removed){
+      SRV.mtimes.delete(p);
+      if(p===SRV.name){ SRV.synced.source=null; continue; } // app copy stays;
+      dropAssetUrl(p);                                      // next flush recreates
+      doc.assets.delete(p); SRV.synced.assets.delete(p);
+      if(srvIsDocTheme(p)) themes=true;
+    }
+    for(const f of changed){
+      const r = await srvApi("file/"+encPath(f.path));
+      if(!r.ok) continue;                       // gone again; next poll settles it
+      SRV.mtimes.set(f.path, f.mtime);
+      if(f.path===SRV.name){
+        const txt = await r.text();
+        const keep = Math.min(ta.selectionStart, txt.length);
+        state.source = txt; ta.value = txt;
+        ta.setSelectionRange(keep, keep);
+        SRV.synced.source = txt; SRV.synced.name = SRV.name;
+        state.filename = SRV.name;
+        src = true;
+      }else{
+        const b = await r.blob();
+        dropAssetUrl(f.path);
+        doc.assets.set(f.path, b); SRV.synced.assets.set(f.path, b);
+        if(srvIsDocTheme(f.path)) themes=true;
+      }
+    }
+    if(themes){
+      for(const id of Object.keys(THEMES)) if(THEMES[id].path) delete THEMES[id];
+      await registerDocThemes();
+      if(!THEMES[state.themeId]) state.themeId="midnight";
+      appliedThemeCss=null;
+    }
+    if(src) reparse();
+    refresh(); renderAssets(); pushAssets();
+  };
+
+  const srvPollNow = async ()=>{
+    let m;
+    try{
+      const r = await srvApi("manifest");
+      if(!r.ok) throw new Error("manifest -> "+r.status);
+      m = await r.json();
+    }catch(e){
+      if(!SRV.offline){ SRV.offline=true; console.warn("deckserver:", e); }
+      srvBadge(srvDiff().any ? "· server unreachable — NOT saved"
+                             : "· server unreachable", true);
+      return;
+    }
+    if(m.problem && !SRV.problemShown){ SRV.problemShown=true;
+      alert("deckserver: "+m.problem); }
+    if(!m.problem) SRV.problemShown=false;
+    if(!m.problem && m.manuscript && !srvDiff().src && !doc.assets.has(m.manuscript)){
+      SRV.name = m.manuscript;                  // adopted an on-disk rename;
+      state.filename = m.manuscript;            // srvMdName must follow suit
+    }
+
+    const disk = new Map(m.files.map(f=>[f.path, f]));
+    const extChanged=[], extRemoved=[];
+    for(const [p,f] of disk)
+      if(SRV.mtimes.get(p)!==f.mtime) extChanged.push(f);
+    for(const p of SRV.mtimes.keys())
+      if(!disk.has(p)) extRemoved.push(p);
+
+    if(extChanged.length || extRemoved.length){
+      // conflicts are PER FILE: only a file dirty on both sides needs a call
+      const d = srvDiff();
+      const local = new Set([...d.puts, ...d.dels]);
+      if(d.src){ local.add(srvMdName()); if(SRV.synced.name) local.add(SRV.synced.name); }
+      const overlap = [...extChanged.map(f=>f.path), ...extRemoved]
+        .filter(p=>local.has(p));
+      let pullC = extChanged, pullR = extRemoved;
+      if(overlap.length){
+        const useDisk = confirm("Changed both on disk and in the app:\n  "
+          + overlap.join("\n  ")
+          + "\n\nOK — load the disk version (discards the app's edits to these)"
+          + "\nCancel — keep the app version (overwrites the disk files)");
+        if(!useDisk){
+          pullC = extChanged.filter(f=>!local.has(f.path));
+          pullR = extRemoved.filter(p=>!local.has(p));
+          // the app wins: adopt the disk mtimes so this poll's finding isn't
+          // re-raised; the flush below then overwrites the disk versions
+          for(const p of overlap){
+            const f=disk.get(p);
+            if(f) SRV.mtimes.set(p, f.mtime); else SRV.mtimes.delete(p);
+          }
+        }
+      }
+      await srvPull(pullC, pullR);
+    }
+    await srvFlushNow();     // also the retry path while the server was away
+  };
+
+  // last gasp on page close: sendBeacon can only POST without headers, so
+  // the token rides the query string and the server treats POST as PUT
+  window.addEventListener("pagehide", ()=>{
+    if(!SRV.on || !srvDiff().src) return;
+    navigator.sendBeacon("/@deckwright/api/file/"+encPath(srvMdName())
+      + "?token="+encodeURIComponent(SRV.token),
+      new Blob([state.source], {type:"text/markdown"}));
+  });
+
   // Start with a quick render so the UI isn't blank while restoring
   initWithSource(state.source);
   (async ()=>{
+    if(await srvProbe()){ await srvBoot(); return; }
     try{
       const saved = await idbGet("current");
       if(saved && typeof saved.source === "string"){
@@ -1984,9 +2250,44 @@ ${slidesHtml}
   $("pTimer").addEventListener("click", ()=>{ startedAt=Date.now(); $("pTimer").textContent=fmt(0); });
   $("pPrev").addEventListener("click", ()=>setIndex(state.index-1));
   $("pNext2").addEventListener("click", ()=>setIndex(state.index+1));
+  /* The theme selection is DOCUMENT state: the front matter `theme:` line is
+     its one home. Cycling the button therefore EDITS the manuscript — it
+     rewrites the line (the last one, which is the one the parser honors),
+     adds it to existing front matter, or wraps a bare document in a new
+     front matter block. Everything downstream (state.themeId via reparse,
+     persistence, .ddz, audience sync) follows from the edit like from any
+     other keystroke. */
+  const setSourceTheme=(id)=>{
+    const src = ta.value;
+    const lines = src.split("\n");
+    let out;
+    if(lines[0] !== undefined && lines[0].trim() === "---"){
+      let j=1, themeLine=-1;
+      while(j<lines.length && lines[j].trim()!=="---"){
+        const m=lines[j].match(/^([\w]+)\s*:/);
+        if(m && m[1].toLowerCase()==="theme") themeLine=j;
+        j++;
+      }
+      if(themeLine>=0) lines[themeLine]="theme: "+id;
+      else lines.splice(Math.min(j, lines.length), 0, "theme: "+id);
+      out = lines.join("\n");
+    }else{
+      out = "---\ntheme: "+id+"\n---\n\n"+src;
+    }
+    // keep the caret where the user left it, shifted past the edit
+    let p=0; const n=Math.min(src.length,out.length);
+    while(p<n && src[p]===out[p]) p++;
+    const d=out.length-src.length;
+    const adj=x=> x<=p ? x : Math.max(p, x+d);
+    const s0=ta.selectionStart, e0=ta.selectionEnd;
+    ta.value = out;
+    ta.setSelectionRange(adj(s0), adj(e0));
+    state.source = out;
+  };
   $("themeBtn").addEventListener("click", ()=>{
     const ids=Object.keys(THEMES);
-    state.themeId=ids[(ids.indexOf(state.themeId)+1)%ids.length];
+    setSourceTheme(ids[(ids.indexOf(state.themeId)+1)%ids.length]);
+    reparse();             // front matter now names the theme; reparse adopts it
     refresh(); persistSoon();
   });
   /* Loaded themes become part of the DOCUMENT: the .css file joins the
