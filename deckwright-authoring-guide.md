@@ -1,6 +1,6 @@
-# Deckwright Authoring Guide (for an AI)
+# Deckwright Authoring Guide
 
-You author two things: a **deck** (one Markdown manuscript) and, optionally, a **theme** (one CSS file). This is the complete contract. Follow it exactly — Deckwright's parser is small and literal.
+You author two things: a **deck** (one Markdown manuscript) and, optionally, one or more **themes** (CSS file). This is the complete contract. Follow it exactly — Deckwright's parser is small and literal.
 
 ## 1. The mental model
 
