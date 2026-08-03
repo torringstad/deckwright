@@ -1846,8 +1846,9 @@ if(!IS_AUDIENCE){
     if(!m.problem) SRV.problemShown=false;
     if(!m.problem && m.manuscript && !srvDiff().src && !doc.assets.has(m.manuscript)){
       SRV.name = m.manuscript;                  // adopted an on-disk rename;
-      state.filename = m.manuscript;            // srvMdName must follow suit
-    }
+      state.filename = m.manuscript;            // srvMdName must follow suit,
+      SRV.synced.name = m.manuscript;           // and nothing of OURS became
+    }                                           // dirty — the disk did this
 
     const disk = new Map(m.files.map(f=>[f.path, f]));
     const extChanged=[], extRemoved=[];

@@ -33,6 +33,7 @@ different launcher (wsgiref.handlers.CGIHandler) around make_app().
 from __future__ import annotations
 
 import argparse
+import importlib.resources as importlib_resources
 import json
 import mimetypes
 import os
@@ -272,6 +273,34 @@ def find_port(host: str, wanted: int) -> int:
     sys.exit(2)
 
 
+def find_app_html(explicit: str | None) -> tuple[bytes, Path | str]:
+    """Locate and read the Deckwright application HTML, trying, in order:
+      1. an explicit --app path;
+      2. deckwright.html next to this script (source checkout / editable);
+      3. deckwright.html shipped as wheel data (installed package).
+    Returns (bytes, where) or raises the LAST OSError if nothing worked."""
+    last_err: OSError | None = None
+
+    if explicit:
+        return Path(explicit).read_bytes(), Path(explicit)
+
+    sibling = Path(__file__).with_name("deckwright.html")
+    try:
+        return sibling.read_bytes(), sibling
+    except OSError as e:
+        last_err = e
+
+    try:
+        res = importlib_resources.files(__package__ or "").joinpath(
+            "deckwright.html")
+        return res.read_bytes(), "packaged deckwright.html"
+    except (OSError, ModuleNotFoundError) as e:
+        last_err = e if isinstance(e, OSError) else last_err
+
+    assert last_err is not None
+    raise last_err
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(
         prog="deckserver",
@@ -298,12 +327,10 @@ def main(argv=None):
         sys.exit(2)
 
     # -- read everything from OUTSIDE the root, before any network activity
-    app_path = Path(args.app) if args.app else Path(__file__).with_name(
-        "deckwright.html")
     try:
-        app_html = app_path.read_bytes()
+        app_html, _ = find_app_html(args.app)
     except OSError as e:
-        print(f"deckserver: cannot read the app at {app_path}: {e}\n"
+        print(f"deckserver: cannot read the app: {e}\n"
               "  (put deckwright.html next to deckserver.py, or use --app)",
               file=sys.stderr)
         sys.exit(2)

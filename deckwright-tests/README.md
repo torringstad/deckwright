@@ -43,6 +43,19 @@ lifecycle, deck title.
 counter), the audience popup: deck transfer, nav sync both directions, live
 edits pushed, hide/show, image CSS arriving in the popup.
 
+`tests/test_document_server.py` — document server mode: a real
+`deckserver.py` subprocess serves a temp directory and the tests have two
+actors, browser and disk. Boot pulls the tree (badge, manuscript, assets);
+edits, uploads, deletions, and the theme button flush back as diffs;
+external edits/adds/removes arrive silently; an on-disk rename is adopted
+without questions; a file dirty on BOTH sides raises exactly one confirm,
+tested in both directions (including that the conditional-write 412 path
+never clobbers); missing token alerts and falls back with the disk left
+untouched; an empty directory materializes `deck.md`; two root manuscripts
+are refused at startup. Needs `bottle` and `waitress` importable (the
+module skips itself otherwise) and `deckserver.py` next to the app under
+test, or `$DECKSERVER_PY`.
+
 `tests/test_export_html.py` — Save round-trips the source byte-identically;
 Export HTML is captured as a real download, asserted script-free and
 complete, then **rendered in the browser next to its images** and checked
@@ -69,5 +82,4 @@ co-located images resolve) — quick visual review of CSS or theme changes.
 
 The suite has been mutation-checked: deliberately breaking the directive
 paragraph rule, the bleed CSS, and the audience sync each made the
-corresponding tests (and only sensible ones) fail. Full run: 58 tests,
-~30 s headless.
+corresponding tests (and only sensible ones) fail. Full run: 87 tests, ~90 s headless.

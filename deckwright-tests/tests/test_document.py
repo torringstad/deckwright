@@ -145,7 +145,10 @@ def test_ddz_rejects_wrong_root_md_count(dw, mds):
     msgs = []
     dw.page.once("dialog", lambda d: (msgs.append(d.message), d.accept()))
     open_ddz(dw, files)
-    dw.page.wait_for_function("() => true")  # let the async open settle
+    for _ in range(100):                 # the open is async; poll (pumping
+        if msgs:                         # the event loop) until its verdict
+            break                        # arrives instead of asserting after
+        dw.page.wait_for_timeout(50)     # a single immediate-resolve pump
     assert msgs and "exactly one .md" in msgs[0]
     # the current document was left untouched
     expect(dw.page.locator("#deckTitle")).to_have_text("Before")
