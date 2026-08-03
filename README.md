@@ -1,87 +1,61 @@
-# Deckwright test system
+# Deckwright
 
-Python-driven, full-application tests: pytest + Playwright drive a real
-Chromium against the actual `deckwright.html` served over localhost HTTP.
-No part of the app is re-implemented for testing — even the markdown-engine
-unit tests call the app's own `mdToHtml`/`parseDeck` in the live page, so
-there is exactly one implementation under test.
+![Editor view](deckwright_edit_small.png)
+![Presenter view](deckwright_presenter_small.png)
+![Audience view](deckwright_audience_small.png)
 
-## Setup
+A slide deck tool in a single HTML file. Write your deck as plain markdown,
+present it from the same page, export it as a self-contained static page.
+No build step, no dependencies.
 
-TBD
+## Getting started
 
-    pip install -r requirements.txt
-    playwright install chromium
-    pytest
+Some alternatives:
 
-The app under test is resolved from `$DECKWRIGHT_HTML`, or `deckwright.html`
-found in this directory, its parent, or the working directory.
+- Clone from GitHub: 
+  - `git clone git@github.com:torringstad/deckwright.git`
+  - `https://github.com/torringstad/deckwright.git` 
 
-## What's covered
+- Download
+[deckwright.html](https://github.com/torringstad/deckwright/blob/main/deckwright.html)
+and put it anywhere your browser can reach it.
 
-`tests/test_engine_md.py` — markdown blocks and inlines, fenced-code
-protection, escaping (`\<!--`), directive paragraph-breaking, HTML injection
-safety.
+- Live demo: https://www.pvv.ntnu.no/~torhr/deckwright/deckwright.html
 
-`tests/test_parser_deck.py` — front matter, slide splitting and source
-ranges, slide- vs block-directive routing, the warnings channel (unknown
-names, bad options, fence/escape immunity).
+The live demo automatically opens the intro document
+([deckwright_intro.md](https://github.com/torringstad/deckwright/blob/main/deckwright_intro.md),
+[gallery](deckwright_intro_gallery),
+[html](deckwright_intro.html)).
 
-`tests/test_image_directive.py` — the image directive rendered for real:
-DOM shape, computed CSS, geometry (`width=50%` measures half the content
-width; `bleed` spans the slide; `cover` fills the slide — or the column in
-split layout), and pixel sampling against generated solid-color images
-(`dim=0.5` on pure red must sample ≈ rgb(128,0,0); `contain` letterboxes).
-Placeholder fallback for missing files.
+## Operating mode
 
-`tests/test_layout_css.py` — layouts and split bands, zoom geometry, `bg:`
-color and image (by pixel), theme front matter and cycling, transitions.
+Deckwright can run in **standalone** or **document server** mode.
 
-`tests/test_editor_ui.py` — rail thumbnails and click-nav, keyboard nav with
-clamping, caret→slide sync and rail→caret sync, notes panel, errBox warning
-lifecycle, deck title.
+### Setup
 
-`tests/test_presenter_audience.py` — presenter view (current/next/notes/
-counter), the audience popup: deck transfer, nav sync both directions, live
-edits pushed, hide/show, image CSS arriving in the popup.
 
-`tests/test_document_server.py` — document server mode: a real
-`deckserver.py` subprocess serves a temp directory and the tests have two
-actors, browser and disk. Boot pulls the tree (badge, manuscript, assets);
-edits, uploads, deletions, and the theme button flush back as diffs;
-external edits/adds/removes arrive silently; an on-disk rename is adopted
-without questions; a file dirty on BOTH sides raises exactly one confirm,
-tested in both directions (including that the conditional-write 412 path
-never clobbers); missing token alerts and falls back with the disk left
-untouched; an empty directory materializes `deck.md`; two root manuscripts
-are refused at startup. Needs `bottle` and `waitress` importable (the
-module skips itself otherwise) and `deckserver.py` next to the app under
-test, or `$DECKSERVER_PY`.
 
-`tests/test_export_html.py` — Save round-trips the source byte-identically;
-Export HTML is captured as a real download, asserted script-free and
-complete, then **rendered in the browser next to its images** and checked
-(slides, figures, captions, theme colors).
+## Development status
 
-## Conventions
+The project has plenty of rough edges, but should definitely be usable.
 
-Tests interact through public behavior only: DOM, keyboard, mouse,
-downloads, popups. Pixel assertions use `dwtest/assets.py`'s generated
-images with known colors. On any failure a full-page screenshot of every
-open window is written to `test-results/`.
+To a certain degree, flexibility has been prioritised over absolute
+robustness. An effort has been made to make it hard to break things by
+accident, but you will definitely be able to break things if you try (in
+particular with creative CSS in themes).
 
-Env knobs: `HEADED=1` watches the browser, `SLOWMO=250` slows actions,
-`CHROMIUM_PATH=` overrides the browser binary.
+Did I mention responsive design? No? Good!
 
-## Dev tool
+## Creating presentations with AI assistance
 
-    python scripts/gallery.py my_deck.md -o gallery/
+The file [deckwright-authoring-guide.md](deckwright-authoring-guide.md)
+contains a concise guide to authoring Deckwright presentations and themes.
+It is well suited for feeding to an AI.
 
-renders every slide of a deck to PNGs (serving the deck's directory so
-co-located images resolve) — quick visual review of CSS or theme changes.
+## Alternatives
 
-## Validation
+**[Deckless](https://deckless.app)** is a professional and polished product
+with similar design philosophy and a rich feature set.  Compared to
+**Deckless**, **Deckwright** is open source, server-less,
+registration-less, locally installable and compact.
 
-The suite has been mutation-checked: deliberately breaking the directive
-paragraph rule, the bleed CSS, and the audience sync each made the
-corresponding tests (and only sensible ones) fail. Full run: 87 tests, ~90 s headless.
