@@ -273,6 +273,16 @@
   .md .kicker{ font-family:var(--mono); font-size:18px; letter-spacing:3px;
     text-transform:uppercase; color:var(--s-accent); font-weight:600; margin:0 0 18px; }
 
+  /* ---- math (MathML from Temml) ---- */
+  .md math{ color:var(--s-text); font-size:1.05em; }
+  .md math[display="block"]{ display:block; margin:0 0 .7em; font-size:1.15em;
+    text-align:center; overflow-x:auto; overflow-y:hidden; }
+  /* placeholder shown while Temml is still loading, or if it failed to load */
+  .md .math-src{ font-family:var(--mono); font-size:.9em; color:var(--s-muted);
+    background:var(--s-surface); padding:.06em .3em; border-radius:4px; }
+  .md .math-src.math-display{ display:block; text-align:center; margin:0 0 .7em;
+    padding:.4em .6em; }
+
   /* ---- image directive figures (<!-- image: file … -->) ----
      .fig            wrapper; width:fit-content so alignment + captions track
                      the picture. width=… sets an explicit width (.has-w).
@@ -704,6 +714,62 @@ const BLOCK_DIRECTIVES = { image: renderImage };
 const escHtml = s => s.replace(/[&<>]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;"}[c]));
 const escAttr = s => escHtml(s).replace(/"/g,"&quot;");
 
+/* =============================================================================
+ * MATH — TeX in the source, MathML in the DOM.
+ *
+ * Authors write $inline$ and $$display$$ (markdown-flavored). The conversion
+ * TeX -> MathML is done by Temml, loaded lazily from a CDN only when a
+ * document actually uses math; the resulting MathML is inert, needs no
+ * runtime, and bakes straight into the static HTML export (which therefore
+ * carries no dependency at all — only the live editor fetches the converter).
+ *
+ * renderMath() is the single choke point and, like every other emitter here,
+ * is pure string-out and never throws: if Temml isn't loaded yet it returns
+ * an honest placeholder carrying the raw TeX, and the surface re-renders once
+ * the script arrives (onTemmlReady). If Temml IS loaded but the TeX is bad,
+ * Temml's own error markup (throwOnError:false) is returned.
+ * ===========================================================================*/
+const TEMML_SRC = "https://cdn.jsdelivr.net/npm/temml@0.11.11/dist/temml.min.js";
+
+// Does a source string contain math? Cheap pre-check that gates the loader.
+// $$ (display) or a $…$ pair with non-space adjacent to the delimiters.
+const MATH_INLINE_RE = /(^|[^\\$])\$(?!\s)((?:\\.|[^\\$])+?)(?<!\s)\$(?!\d)/;
+const hasMath = src => {
+  const s = String(src);
+  return /(^|[^\\])\$\$/.test(s) || MATH_INLINE_RE.test(s);
+};
+
+let temmlLoad = null;                     // promise, cached after first request
+const temmlReadyCbs = [];
+const onTemmlReady = cb => { temmlReadyCbs.push(cb); };
+function loadTemml(){
+  if(window.temml) return Promise.resolve(window.temml);
+  if(temmlLoad) return temmlLoad;
+  temmlLoad = new Promise((res, rej)=>{
+    const s = document.createElement("script");
+    s.src = TEMML_SRC; s.async = true;
+    s.onload = ()=>{ res(window.temml); temmlReadyCbs.forEach(cb=>{ try{ cb(); }catch(e){} }); };
+    s.onerror = ()=>{ temmlLoad = null; rej(new Error("Could not load the math renderer (Temml).")); };
+    document.head.appendChild(s);
+  });
+  return temmlLoad;
+}
+
+/** TeX -> MathML string. display=true for $$…$$ block math. Never throws. */
+function renderMath(tex, display){
+  const src = String(tex);
+  if(window.temml){
+    try{
+      return window.temml.renderToString(src, {
+        displayMode: !!display, throwOnError: false });
+    }catch(e){ /* fall through to placeholder */ }
+  }
+  const cls = "math-src" + (display ? " math-display" : "");
+  const body = escHtml(src);
+  return display ? `<span class="${cls}">$$${body}$$</span>`
+                 : `<span class="${cls}">$${body}$</span>`;
+}
+
 function mdInline(src){
   const codes=[];
   // protect inline code first so its contents are never re-parsed for
@@ -712,6 +778,15 @@ function mdInline(src){
   let s = src.replace(/`([^`]+)`/g, (_,c)=>{
     codes.push(c.replace(/\\(<!--)/g, "$1")); return "\u0000"+(codes.length-1)+"\u0000";
   });
+  // protect inline math ($…$) next — its TeX is full of _, ^, \, *, {} that
+  // markdown would otherwise mangle. Code is already tucked away, so $x$
+  // inside `code` stays literal. \$ escapes to a literal dollar. GitHub-ish
+  // adjacency: no whitespace just inside the delimiters, no digit right after
+  // the closer (so "$5 and $6" reads as currency, not math).
+  const maths=[];
+  s = s.replace(MATH_INLINE_RE, (_,pre,tex)=>
+    pre + "\u0001" + (maths.push(tex.replace(/\\\$/g,"$")) - 1) + "\u0001");
+  s = s.replace(/\\\$/g, "$");     // \$ -> literal dollar outside math
   s = s.replace(/\\(<!--)/g, "$1"); // \<!-- shows as a literal comment
   s = escHtml(s);
   s = s.replace(/!\[([^\]]*)\]\(([^)\s]+)\)/g, (_,alt,u)=>`<img src="${escAttr(RESOLVE_SRC(u))}" alt="${escAttr(alt)}">`);
@@ -721,6 +796,7 @@ function mdInline(src){
   s = s.replace(/(^|[^A-Za-z0-9_])_([^_\s][^_]*?)_/g, "$1<em>$2</em>");
   s = s.replace(/~~([^~]+)~~/g, "<del>$1</del>");
   s = s.replace(/  $/g, "<br>");
+  s = s.replace(/\u0001(\d+)\u0001/g, (_,i)=>renderMath(maths[+i], false));
   s = s.replace(/\u0000(\d+)\u0000/g, (_,i)=>`<code>${escHtml(codes[+i])}</code>`);
   return s;
 }
@@ -782,6 +858,18 @@ function mdToHtml(md){
       out += `<pre><code>${escHtml(buf.join("\n").replace(/\\(<!--)/g,"$1"))}</code></pre>`;
       continue;
     }
+    // display math: $$ … $$ (its own block). The opener may carry the TeX on
+    // the same line ($$x$$) or start a multi-line block closed by a lone $$.
+    let dm = line.match(/^\s*\$\$(.*)$/);
+    if(dm){
+      const oneLine = dm[1].match(/^(.*?)\$\$\s*$/);
+      if(oneLine){ out += renderMath(oneLine[1].trim(), true); i++; continue; }
+      const buf=[dm[1]]; i++;
+      while(i<lines.length && !/\$\$\s*$/.test(lines[i])){ buf.push(lines[i]); i++; }
+      if(i<lines.length){ buf.push(lines[i].replace(/\$\$\s*$/,"")); i++; }
+      out += renderMath(buf.join("\n").trim(), true);
+      continue;
+    }
     // horizontal rule (in-slide): *** or ___  (--- is reserved for slide breaks)
     if(/^\s*(\*\*\*+|___+)\s*$/.test(line)){ out += "<hr>"; i++; continue; }
     // heading
@@ -824,6 +912,7 @@ function mdToHtml(md){
     while(i<lines.length && !isBlank(lines[i])
           && !/^\s*(#{1,6})\s+/.test(lines[i])
           && !/^\s*```/.test(lines[i])
+          && !/^\s*\$\$/.test(lines[i])
           && !/^\s*>/.test(lines[i])
           && !/^\s*([-*+]|\d+\.)\s+/.test(lines[i])
           && !/^\s*(\*\*\*+|___+)\s*$/.test(lines[i])
@@ -1341,6 +1430,7 @@ if(IS_AUDIENCE){
     rewriteCssUrls(appliedThemeCss, RESOLVE_SRC));
   applyA();
   const showInSlot = makeTransitioner(slot);
+  onTemmlReady(()=>{ if(slot.querySelector(".slide")) fit(false); });
 
   const fit=(animate, dir)=>{
     const w=Math.min(window.innerWidth, window.innerHeight*REF_W/REF_H);
@@ -1375,7 +1465,10 @@ if(IS_AUDIENCE){
     }
     if(m.type==="sync"){
       const prevIdx = st.index;
-      if(typeof m.source==="string") activeDeck=parseDeck(m.source);
+      if(typeof m.source==="string"){
+        activeDeck=parseDeck(m.source);
+        if(!window.temml && hasMath(m.source)) loadTemml().catch(()=>{});
+      }
       // Theme travels as CSS text, so themes loaded in the editor — not just
       // built-ins — work on the audience screen with no registry handshake.
       if(typeof m.themeCss==="string" && m.themeCss!==appliedThemeCss){
@@ -1505,10 +1598,19 @@ if(!IS_AUDIENCE){
   const slidesOf=()=>state.deck.slides;
   const curSlide=()=>slidesOf()[Math.max(0,Math.min(state.index, slidesOf().length-1))];
 
+  // If the manuscript uses math and Temml isn't here yet, fetch it and
+  // re-render once it lands (renderMath emitted placeholders in the meantime).
+  const ensureMath=()=>{
+    if(window.temml || !hasMath(state.source)) return;
+    loadTemml().then(()=>{ refresh(); renderRail(); }).catch(()=>{});
+  };
+  onTemmlReady(()=>{ if(state.deck){ refresh(); renderRail(); } });
+
   /* ---- parse the manuscript into the deck model ---- */
   const reparse=()=>{
     try{
       state.deck = parseDeck(state.source);
+      ensureMath();
       if(THEMES[state.deck.meta.theme]) state.themeId = state.deck.meta.theme;
       const w = state.deck.warnings || [];
       $("errBox").classList.toggle("warn", true);
@@ -2147,7 +2249,16 @@ if(!IS_AUDIENCE){
      file's own stylesheet between the SLIDE-CSS markers, and the font vars
      are read from the live :root — one definition, two consumers. Notes are
      never included because renderSlide() never renders them. */
-  $("exportHtmlBtn").addEventListener("click", ()=>{
+  $("exportHtmlBtn").addEventListener("click", async ()=>{
+    // Math bakes into the export as finished MathML, so the converter must be
+    // present now; if the doc uses math, make sure Temml has arrived first.
+    if(hasMath(state.source) && !window.temml){
+      try{ await loadTemml(); }
+      catch(e){
+        if(!confirm("The math renderer could not be loaded, so formulas will "
+          + "export as their raw $…$ source. Export anyway?")) return;
+      }
+    }
     const styleText = document.querySelector("style").textContent;
     const m = styleText.match(/\/\*\s*SLIDE-CSS-BEGIN\s*\*\/([\s\S]*?)\/\*\s*SLIDE-CSS-END\s*\*\//);
     // The slice already carries its own "@layer deck-base{ … }" wrapper; the

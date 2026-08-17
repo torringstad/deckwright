@@ -116,3 +116,70 @@ def test_not_a_table_without_delimiter_row(dw):
 def test_table_breaks_paragraph(dw):
     html = dw.md_to_html("intro\n| A | B |\n| - | - |\n| 1 | 2 |")
     assert html.startswith("<p>intro</p><table")
+
+
+# ---- math ($…$ inline, $$…$$ block) --------------------------------------
+# These assert the pure-string-out contract WITHOUT the Temml converter
+# present: renderMath() emits an honest placeholder carrying the raw TeX,
+# wrapped in .math-src. What matters here is detection, protection ordering,
+# escaping and paragraph-breaking — the MathML itself is Temml's concern and
+# only materializes once the CDN script has loaded in a live surface.
+
+def test_inline_math_placeholder_and_protection(dw):
+    # underscores/carets/asterisks inside math must survive markdown intact
+    html = dw.md_inline("mass is $E = mc^2$ ok")
+    assert '<span class="math-src">$E = mc^2$</span>' in html
+    assert "<em>" not in html and "<sup>" not in html
+
+
+def test_inline_math_shields_markdown_metachars(dw):
+    html = dw.md_inline("$a_i * b_j$")
+    # no <em> from the * , no stray formatting from the _
+    assert '<span class="math-src">$a_i * b_j$</span>' in html
+    assert "<em>" not in html
+
+
+def test_math_inside_code_stays_literal(dw):
+    html = dw.md_inline("`$x$`")
+    assert html == "<code>$x$</code>"
+
+
+def test_escaped_dollar_is_literal(dw):
+    html = dw.md_inline("costs \\$5 and \\$6")
+    assert "$5 and $6" in html
+    assert "math-src" not in html
+
+
+def test_currency_not_treated_as_math(dw):
+    # digit right after the closing $ reads as currency, not a math span
+    html = dw.md_inline("from $5 to $10 today")
+    assert "math-src" not in html
+
+
+def test_block_math_one_line(dw):
+    html = dw.md_to_html("$$ x = y $$")
+    assert '<span class="math-src math-display">$$x = y$$</span>' == html
+
+
+def test_block_math_multiline(dw):
+    html = dw.md_to_html("$$\na + b\n= c\n$$")
+    assert '<span class="math-src math-display">$$a + b\n= c$$</span>' == html
+
+
+def test_block_math_breaks_paragraph_both_sides(dw):
+    html = dw.md_to_html("before\n$$x$$\nafter")
+    assert html.startswith("<p>before</p>")
+    assert html.endswith("<p>after</p>")
+    assert "math-display" in html
+
+
+def test_math_in_fence_is_literal(dw):
+    html = dw.md_to_html("```\n$$x$$\n$y$\n```")
+    assert "<pre><code>" in html
+    assert "math-src" not in html
+    assert "$$x$$" in html and "$y$" in html
+
+
+def test_math_body_is_escaped(dw):
+    html = dw.md_inline("$a < b$")
+    assert '<span class="math-src">$a &lt; b$</span>' in html
