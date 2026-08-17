@@ -2294,7 +2294,8 @@ body{ background:#0c0f16; font-family:var(--sans);
   gap:28px; padding:28px 16px; }
 /* Pure-CSS fit-to-window. Browsers without length division in calc()
    ignore this and show slides at native ${REF_W}px (scroll to pan). */
-.slide{ zoom:min(1, calc((100vw - 32px) / ${REF_W}px));
+.slide{ width:${REF_W}px; height:${REF_H}px;
+  zoom:min(1, calc((100vw - 32px) / ${REF_W}px));
   flex:0 0 auto; border-radius:6px; box-shadow:0 18px 50px rgba(0,0,0,.5); }
 @media print{
   body{ background:#fff; padding:0; gap:0; }
