@@ -81,7 +81,7 @@ class Server:
             port = s.getsockname()[1]
         self.dir = docdir
         self.proc = subprocess.Popen(
-            [sys.executable, str(_find_server()), str(docdir),
+            [sys.executable, str(_find_server()), "--root", str(docdir),
              "--port", str(port), "--app", str(app_html), *extra],
             stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
         banner = ""

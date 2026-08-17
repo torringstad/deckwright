@@ -72,3 +72,47 @@ def test_unknown_directive_line_dropped(dw):
     html = dw.md_to_html("x\n<!-- bogus: nope -->\ny")
     assert "bogus" not in html
     assert html == "<p>x</p><p>y</p>"
+
+
+def test_table_basic(dw):
+    html = dw.md_to_html("| A | B |\n| - | - |\n| 1 | 2 |")
+    assert html == ("<table><thead><tr><th>A</th><th>B</th></tr></thead>"
+                    "<tbody><tr><td>1</td><td>2</td></tr></tbody></table>")
+
+
+def test_table_optional_outer_pipes(dw):
+    html = dw.md_to_html("A | B\n- | -\n1 | 2")
+    assert html == ("<table><thead><tr><th>A</th><th>B</th></tr></thead>"
+                    "<tbody><tr><td>1</td><td>2</td></tr></tbody></table>")
+
+
+def test_table_alignment_classes(dw):
+    html = dw.md_to_html("| L | C | R |\n| :- | :-: | -: |\n| a | b | c |")
+    assert '<th class="align-left">L</th>' in html
+    assert '<th class="align-center">C</th>' in html
+    assert '<th class="align-right">R</th>' in html
+    assert '<td class="align-left">a</td>' in html
+    assert '<td class="align-center">b</td>' in html
+    assert '<td class="align-right">c</td>' in html
+
+
+def test_table_ragged_rows_padded_and_truncated(dw):
+    html = dw.md_to_html("| A | B |\n| - | - |\n| 1 |\n| 1 | 2 | 3 |")
+    assert "<tr><td>1</td><td></td></tr>" in html   # short row padded
+    assert "<tr><td>1</td><td>2</td></tr>" in html  # long row truncated
+
+
+def test_table_cells_run_inline_markdown(dw):
+    html = dw.md_to_html("| A |\n| - |\n| **b** `c` |")
+    assert "<td><strong>b</strong> <code>c</code></td>" in html
+
+
+def test_not_a_table_without_delimiter_row(dw):
+    html = dw.md_to_html("a | b\nc | d")
+    assert "<table" not in html
+    assert "<p>a | b\nc | d</p>" == html
+
+
+def test_table_breaks_paragraph(dw):
+    html = dw.md_to_html("intro\n| A | B |\n| - | - |\n| 1 | 2 |")
+    assert html.startswith("<p>intro</p><table")

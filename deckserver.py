@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/env python3.12
 """
 deckserver — serve a Deckwright document directory to the Deckwright app.
 
@@ -305,13 +305,16 @@ def main(argv=None):
     ap = argparse.ArgumentParser(
         prog="deckserver",
         description="Serve a Deckwright document directory on localhost.")
-    ap.add_argument("root", nargs="?", default=".",
+    ap.add_argument("file", nargs="?", metavar="FILE",
+                    help="treat FILE as the manuscript, even if other root "
+                         ".md files exist (same as --file)")
+    ap.add_argument("-r", "--root", default=".",
                     help="document root directory (default: current dir)")
     ap.add_argument("--port", type=int, default=DEFAULT_PORT,
                     help=f"port to serve on (default {DEFAULT_PORT}; "
                          "if taken, the next free one is used)")
-    ap.add_argument("--file", metavar="NAME",
-                    help="treat NAME as the manuscript, even if other root "
+    ap.add_argument("-f", "--file", dest="file_opt", metavar="FILE",
+                    help="treat FILE as the manuscript, even if other root "
                          ".md files exist")
     ap.add_argument("--app", metavar="HTML",
                     help="path to deckwright.html (default: next to "
@@ -320,6 +323,15 @@ def main(argv=None):
                     help="serve the API without the access token (trusted "
                          "machines only)")
     args = ap.parse_args(argv)
+
+    # positional [file] and --file are the same knob; reconcile them
+    if args.file_opt is not None:
+        if args.file is not None and args.file != args.file_opt:
+            print(f"deckserver: conflicting manuscripts: {args.file!r} "
+                  f"(positional) vs {args.file_opt!r} (--file)",
+                  file=sys.stderr)
+            sys.exit(2)
+        args.file = args.file_opt
 
     root = Path(args.root).resolve()
     if not root.is_dir():
